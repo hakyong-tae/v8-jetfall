@@ -7,12 +7,25 @@ import { NUM_PARTICLES } from '../core/parts'
 import { POLY_TYPE_NORMAL, MAX_SPAWNPOINTS } from '../core/polymap'
 import {
   MAX_SPRITES,
+  NORMAL_DEATH,
   createSprite,
   createTPlayer,
   teamCollides,
   randomizeStart,
 } from '../core/sprites'
-import { TEAM_ALPHA, TEAM_NONE } from '../core/constants'
+import {
+  TEAM_ALPHA,
+  TEAM_BRAVO,
+  TEAM_NONE,
+  GAMESTYLE_DEATHMATCH,
+  MULTIKILLINTERVAL,
+  BRUTALDEATHHEALTH,
+  OBJECT_ALPHA_FLAG,
+  OBJECT_AK74,
+  OBJECT_PARACHUTE,
+} from '../core/constants'
+import { createWeapons, guns, AK74, COLT, EAGLE, NOWEAPON_NUM } from '../core/weapons'
+import { createThing } from '../core/things'
 
 // 스폰포인트 하나 골라 스프라이트를 만들어주는 공통 셋업
 function spawnAt(gs: GameState, team = TEAM_ALPHA): number {
@@ -205,6 +218,170 @@ describe('moveSkeleton (Sprites.pas:2435-2461)', () => {
       expect(spr.skeleton.pos[b.p].x).toBe(7)
       expect(spr.skeleton.pos[b.p].y).toBe(8)
     }
+  })
+})
+
+describe('combat 1부 — healthHit/die/kill/dropWeapon/applyWeaponByNum (Task 6)', () => {
+  let gs: GameState
+  beforeEach(() => {
+    createWeapons(false)
+    gs = setupTestGame()
+  })
+
+  // DM 전투 셋업: 솔로(TEAM_NONE) 2명 — friendly-fire 가드(IsNotSolo)가 걸리지 않는다.
+  function spawnTwo(): [number, number] {
+    return [spawnAt(gs, TEAM_NONE), spawnAt(gs, TEAM_NONE)]
+  }
+
+  it('healthHit: 대미지만큼 health 감소, 0 이하 → die + 클램프 (HealthHit 3250-3376)', () => {
+    const [v, k] = spawnTwo()
+    const victim = gs.sprite[v]
+    expect(victim.health).toBe(gs.startHealth) // 150
+
+    victim.healthHit(50, k, 1, -1, vector2(0, 0))
+    expect(victim.health).toBe(100)
+    expect(victim.deadMeat).toBe(false)
+
+    victim.healthHit(4000, k, 1, -1, vector2(0, 0))
+    expect(victim.deadMeat).toBe(true)
+    // safety precaution: Health < BRUTALDEATHHEALTH-1 → Health := BRUTALDEATHHEALTH (3352-3353)
+    expect(victim.health).toBe(BRUTALDEATHHEALTH)
+    expect(victim.player!.deaths).toBe(1)
+  })
+
+  it('healthHit: Vest 흡수 — Vest -= Round(0.33*Amt), Health -= Round(0.25*Amt) (3288-3293)', () => {
+    const [v, k] = spawnTwo()
+    const victim = gs.sprite[v]
+    victim.vest = 100
+    victim.healthHit(60, k, 1, -1, vector2(0, 0))
+    expect(victim.vest).toBe(100 - 20) // Round(0.33*60) = Round(19.8) = 20
+    expect(victim.health).toBe(150 - 15) // Round(0.25*60) = 15
+  })
+
+  it('die: DM에서 who≠num이면 sprite[who].player.kills +1 + 멀티킬 (Die 1552-2318, DM 분기 1648)', () => {
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    const [v, k] = spawnTwo()
+    const victim = gs.sprite[v]
+
+    victim.die(NORMAL_DEATH, k, 1, -1, vector2(0, 0))
+
+    expect(gs.sprite[k].player!.kills).toBe(1)
+    // 멀티킬 카운트는 {$IFDEF SERVER} 채택 (규약 8a)
+    expect(gs.sprite[k].multiKills).toBe(1)
+    expect(gs.sprite[k].multiKillTime).toBe(MULTIKILLINTERVAL)
+    expect(victim.player!.deaths).toBe(1)
+    expect(victim.deadMeat).toBe(true)
+    // DM 리스폰 카운터 = sv_respawntime (1597-1599)
+    expect(victim.respawnCounter).toBe(gs.svRespawntime)
+  })
+
+  it('die: 자살(who===num)은 kills 증가 없음, deaths는 항상 +1 (1601)', () => {
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    const [v] = spawnTwo()
+    const victim = gs.sprite[v]
+    victim.die(NORMAL_DEATH, v, 1, -1, vector2(0, 0))
+    expect(victim.player!.kills).toBe(0)
+    expect(victim.player!.deaths).toBe(1)
+    expect(victim.deadMeat).toBe(true)
+  })
+
+  it('die: 깃발 운반 중 사망 → HoldingSprite/HoldedThing 해제 (Die 2186-2191 + 2301)', () => {
+    const v = spawnAt(gs, TEAM_ALPHA)
+    const victim = gs.sprite[v]
+    const f = createThing(gs, vector2(100, 100), 255, OBJECT_ALPHA_FLAG, 255)
+    gs.thing[f].holdingSprite = v
+    victim.holdedThing = f
+
+    victim.die(NORMAL_DEATH, v, 1, -1, vector2(0, 0))
+
+    expect(gs.thing[f].holdingSprite).toBe(0)
+    expect(victim.holdedThing).toBe(0)
+    expect(gs.thing[f].active).toBe(true) // 깃발 자체는 살아서 필드에 남는다
+  })
+
+  it('applyWeaponByNum: guns[] 깊은복사와 슬롯 규칙 (3200-3248)', () => {
+    const [v] = spawnTwo()
+    const spr = gs.sprite[v]
+
+    spr.applyWeaponByNum(guns[AK74].num, 1)
+    expect(spr.weapon.name).toBe(guns[AK74].name)
+    expect(spr.weapon).not.toBe(guns[AK74]) // record 대입 = 깊은복사 (규약 3)
+    // LastWeapon* 기록 (3236-3243)
+    expect(spr.lastWeaponHM).toBe(guns[AK74].hitMultiply)
+    spr.weapon.ammoCount = 1
+    expect(guns[AK74].ammoCount).not.toBe(1) // guns[] 원본 오염 금지
+
+    // Gun=2 → SecondaryWeapon 슬롯
+    spr.applyWeaponByNum(guns[COLT].num, 2)
+    expect(spr.secondaryWeapon.num).toBe(guns[COLT].num)
+
+    // Ammo 인자는 슬롯과 무관하게 Weapon.AmmoCount에 적용 (3224-3225 원본 그대로)
+    spr.applyWeaponByNum(guns[EAGLE].num, 1, 7)
+    expect(spr.weapon.ammoCount).toBe(7)
+
+    // RestorePrimaryState && Gun=2 → SecondaryWeapon := Weapon (3212-3215)
+    spr.applyWeaponByNum(guns[AK74].num, 2, -1, true)
+    expect(spr.secondaryWeapon.num).toBe(guns[EAGLE].num)
+  })
+
+  it('dropWeapon: Thing 생성 + Thing.ammoCount 이월 + 반환값=Thing 인덱스 (2320-2393)', () => {
+    const [v] = spawnTwo()
+    const spr = gs.sprite[v]
+    spr.applyWeaponByNum(guns[AK74].num, 1)
+    spr.weapon.ammoCount = 13
+
+    const t = spr.dropWeapon()
+
+    expect(t).toBeGreaterThan(0)
+    expect(gs.thing[t].active).toBe(true)
+    expect(gs.thing[t].style).toBe(OBJECT_AK74)
+    expect(gs.thing[t].ammoCount).toBe(13)
+    // 드롭 후 손은 NOWEAPON (2391)
+    expect(spr.weapon.num).toBe(NOWEAPON_NUM)
+  })
+
+  it('kill: 스프라이트 비활성 + 깃발 해제 (Kill 1424-1490)', () => {
+    const v = spawnAt(gs, TEAM_ALPHA)
+    const spr = gs.sprite[v]
+    const f = createThing(gs, vector2(100, 100), 255, OBJECT_ALPHA_FLAG, 255)
+    gs.thing[f].holdingSprite = v
+    spr.holdedThing = f
+
+    spr.kill()
+
+    expect(spr.active).toBe(false)
+    expect(gs.spriteParts.active[v]).toBe(false)
+    expect(gs.thing[f].holdingSprite).toBe(0)
+    expect(spr.holdedThing).toBe(0)
+  })
+
+  it('parachute: 발밑 여유가 PARA_DISTANCE-10 초과면 낙하산 Thing 생성 (3785-3821)', () => {
+    const gs2 = setupTestGame({ emptyMap: true }) // 폴리곤 0개 → 레이캐스트 미스
+    const player = createTPlayer()
+    player.name = 'P'
+    player.team = TEAM_NONE
+    const i = createSprite(gs2, vector2(0, -700), vector2(0, 0), 1, 255, player, true)
+    const spr = gs2.sprite[i]
+
+    spr.parachute(vector2(0, -700))
+
+    expect(spr.holdedThing).toBeGreaterThan(0)
+    expect(gs2.thing[spr.holdedThing].style).toBe(OBJECT_PARACHUTE)
+    expect(gs2.thing[spr.holdedThing].holdingSprite).toBe(i)
+  })
+
+  it('changeTeam: 무기 드롭 + 팀 변경 + 리스폰 (3823-3972)', () => {
+    const v = spawnAt(gs, TEAM_ALPHA)
+    const spr = gs.sprite[v]
+    spr.applyWeaponByNum(guns[AK74].num, 1)
+
+    spr.changeTeam(TEAM_BRAVO)
+
+    expect(spr.player!.team).toBe(TEAM_BRAVO)
+    expect(spr.active).toBe(true)
+    expect(spr.deadMeat).toBe(false)
+    // DropWeapon 경유 — 이전 무기가 Thing으로 필드에 떨어져 있다
+    expect(gs.thing.some((t) => t.active && t.style === OBJECT_AK74)).toBe(true)
   })
 })
 

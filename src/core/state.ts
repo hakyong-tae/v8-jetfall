@@ -10,6 +10,7 @@ import { PolyMap } from './polymap'
 import type { TAnimation } from './anims'
 import { type TVector2, vector2 } from './vector'
 import { TSprite, MAX_SPRITES, MAX_BULLETS, MAX_SPARKS, MAX_THINGS } from './sprites'
+import { MAIN_WEAPONS } from './weapons'
 import { TSpark } from './sparks'
 import { TBullet } from './bullets'
 import { TThing } from './things'
@@ -229,6 +230,32 @@ export interface GameState {
   // (기본 no-op). `PlaySound(sfx, pos)` 호출부는 core에서 `gs.playSound(sfx, pos)`로 번역되고,
   // web/sound.ts(T13)가 실제 WebAudio 배선을 담당한다.
   playSound: (sfx: number, pos: TVector2) => void
+
+  // ── M2 Task 6 추가분 (Sprites.pas Kill/Die/HealthHit/ChangeTeam이 읽는 전역 — "발견 시 추가").
+  // ServerHelper.pas SortPlayers — 프래그 정렬(콘솔/스코어보드용 표시 순서). Kill/Die 끝에서
+  // 호출되지만 게임플레이에 역류하지 않아 훅으로 둔다 (T10이 배선; 미배선이면 no-op).
+  sortPlayers?: () => void
+  // Server.pas:216 / Client.pas `GOALTICKS: Integer = DEFAULT_GOALTICKS` — 메인 루프 목표 틱레이트.
+  // ToggleBulletTime(Game.pas:263-277)이 불릿타임 중 1/3로 낮춘다. 프레임 페이싱 소비는 web 루프.
+  goalTicks: number
+  svBullettime: boolean // sv_bullettime, Value=False (Cvar.pas:970)
+  svRespawntimeMinwave: number // sv_respawntime_minwave, Value=120 (Cvar.pas:852)
+  svAdvancemodeAmount: number // sv_advancemode_amount, Value=2 (Cvar.pas:980)
+  svInfRedaward: number // sv_inf_redaward, Value=30 (Cvar.pas:829)
+  svBalanceteams: boolean // sv_balanceteams, Value=False (Cvar.pas:972)
+  svMaxspectators: number // sv_maxspectators, Value=10 (Cvar.pas:880)
+  // Game.pas:70-71 survival 전역 (Die의 서바이벌 라운드 종료 판정이 기록).
+  aliveNum: number
+  teamAliveNum: number[] // array[0..5] of Byte
+  // Net.pas:851 `PlayersTeamNum: array[1..4] of Integer` — 팀별 접속 인원 (Game.pas:756/777이
+  // 집계). INF 서바이벌 감점식이 읽는다. 집계 배선은 T10 — 그 전까지 0 유지. 1-based, [0] 더미.
+  playersTeamNum: number[]
+  // Game.pas:86 `WeaponSel: array[1..MAX_SPRITES, 1..MAIN_WEAPONS] of Byte` — 플레이어별 무기
+  // 선택 허용 비트. Die의 advance-mode 블록이 조작, Respawn(T7)이 읽는다. 1-based, [0] 더미행.
+  weaponSel: number[][]
+  // Server.pas:233 `WeaponActive: array[-1..15] of Byte` — 서버 무기 허용 목록. 이 포트는
+  // 1..MAIN_WEAPONS만 쓰며(음수/0/15 인덱스는 서버 콘솔 명령 전용) 기본 전부 허용(=1).
+  weaponActive: number[]
 }
 
 export function createGameState(): GameState {
@@ -304,6 +331,20 @@ export function createGameState(): GameState {
     teamScore: new Array(6).fill(0),
     teamFlag: new Array(5).fill(0),
     playSound: () => {},
+    goalTicks: 60, // DEFAULT_GOALTICKS (constants.ts:22)
+    svBullettime: false,
+    svRespawntimeMinwave: 120,
+    svAdvancemodeAmount: 2,
+    svInfRedaward: 30,
+    svBalanceteams: false,
+    svMaxspectators: 10,
+    aliveNum: 0,
+    teamAliveNum: new Array(6).fill(0),
+    playersTeamNum: new Array(5).fill(0),
+    weaponSel: Array.from({ length: MAX_SPRITES + 1 }, () =>
+      new Array(MAIN_WEAPONS + 1).fill(0),
+    ),
+    weaponActive: new Array(MAIN_WEAPONS + 1).fill(1),
   }
   // Pascal의 Sprite 배열은 항상 존재하는 레코드들(Active 플래그로 사용 여부 표시) — 여기서도
   // MAX_SPRITES개를 미리 만들어 둔다. [0]은 1-based 더미.

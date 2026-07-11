@@ -135,7 +135,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         spriteC.weapon.fireIntervalCount > spriteC.weapon.fireInterval ||
         spriteC.weapon.reloadTimeCount > spriteC.weapon.reloadTime
       ) {
-        spriteC.applyWeaponByNum(spriteC.weapon.num, 1) // TODO(M2) stub
+        spriteC.applyWeaponByNum(spriteC.weapon.num, 1)
         spriteC.weapon.ammoCount = 0
         // {$IFNDEF SERVER} if (Num = MySprite) and not DeadMeat then ClientSpriteSnapshot
         //   — 네트워크 스냅샷, 미채택
@@ -513,7 +513,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
           spriteC.bodyAnimation.currFrame === 19 &&
           GUN_NEQ /* Weapon.Num <> Guns[NOWEAPON].Num */
         ) {
-          spriteC.dropWeapon() // TODO(M2) stub
+          spriteC.dropWeapon()
           spriteC.bodyApplyAnimation(anims.stand, 1)
         }
       }
