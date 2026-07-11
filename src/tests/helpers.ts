@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { createGameState, type GameState } from '../core/state'
+import { createGameState, loadThingObjects, type GameState } from '../core/state'
 import { loadAnimObjects } from '../core/anims'
 import { loadMapFile } from '../core/mapfile'
 import { loadSpriteObjects } from '../core/sprites'
@@ -23,11 +23,13 @@ export function loadTestMap(gs: GameState, mapName = 'ctf_Ash.pms'): void {
   gs.map.loadData(mapFile)
 }
 
-// GameState 풀 셋업: 애니메이션 44종 + SpriteParts/GostekSkeleton + ctf_Ash 맵.
+// GameState 풀 셋업: 애니메이션 44종 + SpriteParts/GostekSkeleton + BulletParts/SparkParts/
+// 씽 스켈레톤 프로토타입 + ctf_Ash 맵.
 export function setupTestGame(): GameState {
   const gs = createGameState()
   gs.anims = loadAnimObjects(readAssetLines)
   loadSpriteObjects(gs, readAssetLines)
+  loadThingObjects(gs, readAssetLines)
   loadTestMap(gs)
   return gs
 }

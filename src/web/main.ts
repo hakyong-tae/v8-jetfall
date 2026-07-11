@@ -2,7 +2,7 @@
 // 씬 드로우 순서는 원본 GameRendering.pas RenderFrame(925-995) 그대로:
 //   배경 → 뒷폴리곤 → props0 → 병사 → props1 → 앞폴리곤 → props2
 import { Application, Container, Text } from 'pixi.js'
-import { createGameState } from '../core/state'
+import { createGameState, loadThingObjects } from '../core/state'
 import { loadAnimObjects } from '../core/anims'
 import { loadSpriteObjects, createSprite, createTPlayer, randomizeStart } from '../core/sprites'
 import { loadMapFile } from '../core/mapfile'
@@ -33,6 +33,7 @@ async function boot(): Promise<void> {
   const gs = createGameState()
   gs.anims = loadAnimObjects(read)
   loadSpriteObjects(gs, read)
+  loadThingObjects(gs, read)
 
   const mapFile = loadMapFile(await fetchBinary(manifest.maps[MAP_NAME]))
   gs.map.loadData(mapFile)

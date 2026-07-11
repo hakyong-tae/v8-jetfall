@@ -2371,7 +2371,7 @@ export function loadSpriteObjects(gs: GameState, read: (name: string) => string[
   gs.gostekSkeleton.gravity = 1.06 * gs.grav
   gs.gostekSkeleton.vDamping = 0.997
 
-  // TODO(M2): BoxSkeleton(kit.po, 2.15) / BulletParts(GRAV*2.25) / SparkParts(GRAV/1.4) /
-  // FlagSkeleton(flag.po, 4.0) / ParaSkeleton(para.po, 5.0) / StatSkeleton(stat.po, 4.0) /
-  // RifleSkeleton10..55(karabin.po, 1.0..5.5) — Things/Bullets/Sparks 포팅 시 (Anims.pas:348-380).
+  // BoxSkeleton/BulletParts/SparkParts/FlagSkeleton/ParaSkeleton/StatSkeleton/RifleSkeleton10..55
+  // (Anims.pas:373-400) — state.ts의 loadThingObjects(gs, read)로 이관됨 (M2 Task 2). 호출자는
+  // loadSpriteObjects와 loadThingObjects를 둘 다 호출해야 한다 (helpers.ts/main.ts 참조).
 }

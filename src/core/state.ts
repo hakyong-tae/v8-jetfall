@@ -9,7 +9,7 @@ import { ParticleSystem } from './parts'
 import { PolyMap } from './polymap'
 import type { TAnimation } from './anims'
 import { type TVector2, vector2 } from './vector'
-import { TSprite, MAX_SPRITES } from './sprites'
+import { TSprite, MAX_SPRITES, MAX_BULLETS, MAX_SPARKS, MAX_THINGS } from './sprites'
 import {
   DEFAULT_CEASEFIRE_TIME,
   MAX_OLDPOS,
@@ -18,6 +18,31 @@ import {
   GAMESTYLE_INF,
   GAMESTYLE_HTF,
 } from './constants'
+
+// ── PLACEHOLDER TYPES (M2 Task 2) ───────────────────────────────────────────
+// Bullets.pas/Things.pas/Sparks.pas/Waypoints.pas aren't ported yet (Tasks 4/5/3/11 create
+// bullets.ts/things.ts/sparks.ts/waypoints.ts respectively). These minimal stand-ins exist only
+// so the M2 entity arrays/fields below can be typed now. Each later task DELETES its stub here
+// and replaces the import with the real type (e.g. `import type { TBullet } from './bullets'`) —
+// same field name in GameState, so no call-site changes are needed elsewhere. Do not add real
+// behavior/fields to these stubs; the real class in its own module is authoritative.
+// TODO(T4): delete — bullets.ts will export the real TBullet (Bullets.pas:9-56 TBullet record).
+export interface TBullet {
+  active: boolean
+}
+// TODO(T5): delete — things.ts will export the real TThing (Things.pas:13-47 TThing record).
+export interface TThing {
+  active: boolean
+}
+// TODO(T3): delete — sparks.ts will export the real TSpark (Sparks.pas:8-21 TSpark record).
+export interface TSpark {
+  active: boolean
+}
+// TODO(T11): delete — waypoints.ts will export the real TWaypoints (Waypoints.pas:31-34 object:
+// `Waypoint: array[1..MAX_WAYPOINTS] of TWaypoint` + `FindClosest` method).
+export interface TWaypoints {
+  waypoint: unknown[]
+}
 
 export interface GameState {
   ticks: number
@@ -68,8 +93,15 @@ export interface GameState {
   wasReloading: boolean
 
   // ── Game.pas:78 `MapChangeCounter: Integer` — 맵 전환 카운트다운 (전환 중 > 0; 평시엔
-  // Server.pas가 -60으로 리셋). Control.pas:301-302가 조작 잠금에 사용. 전역 zero-init = 0.
+  // Server.pas가 -60으로 리셋). Control.pas:301-302가 조작 잠금에 사용. Pascal 선언 자체는
+  // zero-init이지만, 서버 시작 루틴(Server.pas:1203/718)이 첫 틱 전에 항상 -60으로 세팅하므로
+  // (이 심은 "서버가 이미 기동된" 상태를 표현) 초기값은 -60을 채택한다 (M2 Task 2 수정 —
+  // game.test.ts가 이미 -60을 정상 상태로 간주해 수동 설정하던 것과 일치).
   mapChangeCounter: number
+
+  // ── Game.pas:83 `TimeLimitCounter: Integer = 3600` — 맵 남은 시간(틱). ServerLoop.pas:496-518이
+  // 감소/NextMap 트리거 (TODO(M2 후속) — 맵 로테이션은 game.ts 미포팅 구간).
+  timeLimitCounter: number
 
   // ── Control.pas:25-34 {$IFNDEF SERVER} 유닛 전역 — 로컬 플레이어(MySprite)의 "직전 틱 키
   // 상태"로, 동시 키 입력 해석(좌+우 방향 결정, nade/change/throw/reload 충돌 해소)에 쓰인다.
@@ -101,8 +133,11 @@ export interface GameState {
   // ILUMINATESPEED씩 증가시키고, TSprite.Update(Sprites.pas:1149)가 CeaseFire 알파 점멸에 사용.
   sinusCounter: number
 
-  // ── Game.pas:36 `BulletTimeTimer: Integer` (zero-init 0) — 불릿타임 잔여 틱.
-  // ServerLoop UpdateFrame:363-370이 감소/해제 (ToggleBulletTime은 TODO(M2)).
+  // ── Game.pas:36 `BulletTimeTimer: Integer` — 불릿타임 잔여 틱. Pascal 선언은 zero-init이지만
+  // ServerLoop.pas:363-371(> -1이면 감소 → 0 도달 시 -1로 고정)의 안정 상태(불릿타임 비활성)는
+  // -1이므로 초기값은 -1을 채택한다 (0에서 시작해도 첫 틱에 -1로 수렴하므로 동작은 동일 — M2
+  // Task 2 수정, "정상 상태"를 만드는 것이 목적). ServerLoop UpdateFrame:363-370이 감소/해제
+  // (ToggleBulletTime은 TODO(M2)).
   bulletTimeTimer: number
 
   // ── Server.pas:264 `WaveRespawnTime, WaveRespawnCounter: Integer` — 웨이브 리스폰 주기/카운터
@@ -118,6 +153,77 @@ export interface GameState {
   svAdvancemode: boolean // sv_advancemode = False (Cvar.pas:979)
   svGamemode: number // sv_gamemode = 3 (CTF) (Cvar.pas:966)
   svMaxgrenades: number // sv_maxgrenades = 2 (Cvar.pas:969)
+
+  // ── M2 Task 2 추가분 (Cvar.pas 확인값 — 계획서 초안의 svKilllimit=30은 오기, 실측 10 채택).
+  svKilllimit: number // sv_killlimit, Value=10 (Cvar.pas:989)
+  svTimelimit: number // sv_timelimit, Value=36000 (Cvar.pas:968)
+  svFriendlyfire: boolean // sv_friendlyfire, Value=False (Cvar.pas:967)
+  svBonusFrequency: number // sv_bonus_frequency, Value=0 (Cvar.pas:868)
+  botsDifficulty: number // bots_difficulty, Value=100 (Cvar.pas:945; 300=stupid..10=impossible)
+  // sv_stationaryguns (Cvar.pas:875): `TBooleanCvar.Add(..., Value=False, DefaultValue=True, ...)`
+  // — Value(실제 초기 동작)과 DefaultValue(리셋용)가 원본 자체에서 어긋난다. "고치지 말고 보존"
+  // 규약대로 실제 초기 동작인 Value=False를 채택한다.
+  svStationaryguns: boolean
+
+  // ── Game.pas:115 `Bullet: array[1..MAX_BULLETS] of TBullet` — 탄환 슬롯, 1-based
+  // ([0]은 더미). TBullet은 Task 4(bullets.ts)가 이관하기 전까지 위 placeholder 타입 사용.
+  // sprite 배열과 동일하게 MAX_BULLETS+1개를 미리 채워두되(원본은 값 타입 배열이라 항상 전부
+  // 존재), 지금은 `{active:false}` placeholder 인스턴스다 — Task 4가 실제 TBullet으로 교체.
+  bullet: TBullet[]
+
+  // ── Game.pas:38 `BulletParts: ParticleSystem` — 탄환 트레일/파편 파티클. 파라미터
+  // (TimeStep=1, Gravity=GRAV*2.25, EDamping=0.99)는 Anims.pas LoadAnimObjects:377-380 →
+  // state.ts loadThingObjects()가 세팅.
+  bulletParts: ParticleSystem
+
+  // ── Game.pas:119 `Thing: array[1..MAX_THINGS] of TThing` — 깃발/키트/무기드롭 슬롯, 1-based.
+  // TThing은 Task 5(things.ts)가 이관하기 전까지 placeholder 타입 (`{active:false}` 사전할당).
+  thing: TThing[]
+
+  // ── Game.pas:117 `Spark: array[1..MAX_SPARKS] of TSpark` — 원본은 `{$IFNDEF SERVER}`
+  // (서버엔 스파크가 없다) 이지만, 공통 포팅 규약 12에 따라 이 포트는 core에 채택한다(스파크가
+  // 게임플레이에 역류하는 경로가 없음을 확인했으므로). TSpark는 Task 3(sparks.ts) 이관 전까지
+  // placeholder 타입 (`{active:false}` 사전할당), 1-based.
+  spark: TSpark[]
+
+  // ── Game.pas:38 `SparkParts: ParticleSystem` (Gravity=GRAV/1.4, EDamping=0.998, TimeStep=1;
+  // Anims.pas:382-385 → loadThingObjects()).
+  sparkParts: ParticleSystem
+
+  // ── 씽/불릿이 clone하는 스켈레톤 프로토타입 (Anims.pas LoadAnimObjects:373-400). Things.pas가
+  // 스타일별로 이 중 하나를 record-copy해 TThing.skeleton을 만든다 (Task 5). loadThingObjects()가
+  // 세팅. 원본 순서·Destroy 유무 그대로 보존(BoxSkeleton만 Destroy 호출, 나머지는 없음 — 원본
+  // 자체가 그렇다, "고치지 말고 보존").
+  boxSkeleton: ParticleSystem // objects/kit.po, scale 2.15 — 키트/무기드롭류
+  flagSkeleton: ParticleSystem // objects/flag.po, scale 4.0
+  paraSkeleton: ParticleSystem // objects/para.po, scale 5.0
+  statSkeleton: ParticleSystem // objects/stat.po, scale 4.0 — 고정포
+  rifleSkeleton10: ParticleSystem // objects/karabin.po, scale 1.0
+  rifleSkeleton11: ParticleSystem // scale 1.1
+  rifleSkeleton18: ParticleSystem // scale 1.8
+  rifleSkeleton22: ParticleSystem // scale 2.2
+  rifleSkeleton28: ParticleSystem // scale 2.8
+  rifleSkeleton36: ParticleSystem // scale 3.6
+  rifleSkeleton37: ParticleSystem // scale 3.7
+  rifleSkeleton39: ParticleSystem // scale 3.9
+  rifleSkeleton43: ParticleSystem // scale 4.3
+  rifleSkeleton50: ParticleSystem // scale 5.0
+  rifleSkeleton55: ParticleSystem // scale 5.5
+
+  // ── Game.pas:101 `BotPath: TWaypoints` — 봇 내비게이션 웨이포인트 그래프(단일 인스턴스, 스프라이트당
+  // 아님). Task 11(waypoints.ts)이 실제 타입/findClosest를 이관하기 전까지 placeholder. 맵
+  // 웨이포인트(mapfile.ts의 TWaypoint[])를 botPath로 복사하는 브리지도 Task 11 몫.
+  botPath: TWaypoints
+
+  // ── Game.pas:88 `TeamScore: array[0..5] of Integer` — 인덱스는 TEAM_NONE(0)..TEAM_SPECTATOR(5).
+  teamScore: number[]
+  // ── Game.pas:89 `TeamFlag: array[0..4] of Integer` — 인덱스는 TEAM_NONE(0)..TEAM_DELTA(4).
+  teamFlag: number[]
+
+  // ── 공통 포팅 규약 11: 코스메틱 훅. core는 사운드를 직접 재생하지 않고 이 콜백만 호출한다
+  // (기본 no-op). `PlaySound(sfx, pos)` 호출부는 core에서 `gs.playSound(sfx, pos)`로 번역되고,
+  // web/sound.ts(T13)가 실제 WebAudio 배선을 담당한다.
+  playSound: (sfx: number, pos: TVector2) => void
 }
 
 export function createGameState(): GameState {
@@ -138,7 +244,8 @@ export function createGameState(): GameState {
     startHealth: 150,
     spriteMapColCount: 0,
     wasReloading: false,
-    mapChangeCounter: 0,
+    mapChangeCounter: -60,
+    timeLimitCounter: 3600,
     wasRunningLeft: false,
     wasJumping: false,
     wasThrowingGrenade: false,
@@ -148,7 +255,7 @@ export function createGameState(): GameState {
     noClientUpdateTime: new Array(MAX_SPRITES + 1).fill(0),
     serverTickCounter: 0,
     sinusCounter: 0,
-    bulletTimeTimer: 0,
+    bulletTimeTimer: -1,
     waveRespawnTime: 0,
     waveRespawnCounter: 0,
     grav: 0.06,
@@ -158,11 +265,86 @@ export function createGameState(): GameState {
     svAdvancemode: false,
     svGamemode: 3,
     svMaxgrenades: 2,
+    svKilllimit: 10,
+    svTimelimit: 36000,
+    svFriendlyfire: false,
+    svBonusFrequency: 0,
+    botsDifficulty: 100,
+    svStationaryguns: false,
+    bullet: [],
+    bulletParts: new ParticleSystem(),
+    thing: [],
+    spark: [],
+    sparkParts: new ParticleSystem(),
+    boxSkeleton: new ParticleSystem(),
+    flagSkeleton: new ParticleSystem(),
+    paraSkeleton: new ParticleSystem(),
+    statSkeleton: new ParticleSystem(),
+    rifleSkeleton10: new ParticleSystem(),
+    rifleSkeleton11: new ParticleSystem(),
+    rifleSkeleton18: new ParticleSystem(),
+    rifleSkeleton22: new ParticleSystem(),
+    rifleSkeleton28: new ParticleSystem(),
+    rifleSkeleton36: new ParticleSystem(),
+    rifleSkeleton37: new ParticleSystem(),
+    rifleSkeleton39: new ParticleSystem(),
+    rifleSkeleton43: new ParticleSystem(),
+    rifleSkeleton50: new ParticleSystem(),
+    rifleSkeleton55: new ParticleSystem(),
+    botPath: { waypoint: [] },
+    teamScore: new Array(6).fill(0),
+    teamFlag: new Array(5).fill(0),
+    playSound: () => {},
   }
   // Pascal의 Sprite 배열은 항상 존재하는 레코드들(Active 플래그로 사용 여부 표시) — 여기서도
   // MAX_SPRITES개를 미리 만들어 둔다. [0]은 1-based 더미.
   gs.sprite = Array.from({ length: MAX_SPRITES + 1 }, (_, i) => new TSprite(gs, i))
+  // Bullet/Thing/Spark도 Pascal에서는 값 타입 배열이라 항상 전부 존재한다 — 지금은 TBullet/
+  // TThing/TSpark가 placeholder 타입이므로 `{active:false}` 인스턴스로 자리만 채워둔다.
+  // Task 4/5/3이 진짜 클래스(gs, num을 받는 생성자)로 교체한다 (gs.sprite와 동일 패턴).
+  gs.bullet = Array.from({ length: MAX_BULLETS + 1 }, () => ({ active: false }))
+  gs.thing = Array.from({ length: MAX_THINGS + 1 }, () => ({ active: false }))
+  gs.spark = Array.from({ length: MAX_SPARKS + 1 }, () => ({ active: false }))
   return gs
+}
+
+// Anims.pas LoadAnimObjects:371-400 — BulletParts/SparkParts 파라미터 + BoxSkeleton과 씽/불릿이
+// clone하는 스켈레톤 프로토타입(Flag/Para/Stat/Rifle10..55) 로드. sprites.ts의
+// loadSpriteObjects()(SpriteParts/GostekSkeleton 담당)와 짝을 이루는 나머지 절반이다.
+// `read`는 loadSpriteObjects/loadAnimObjects와 동일한 주입식 파일 리더 (core는 IO-free).
+//
+// 원본 순서·Destroy 유무를 그대로 보존한다: BoxSkeleton/BulletParts/SparkParts만 Destroy를
+// 호출하고, Flag/Para/Stat/Rifle10..55는 Destroy 없이 바로 LoadPOObject한다 — 원본
+// Anims.pas 자체가 이렇다("고치지 말고 보존" 규약).
+export function loadThingObjects(gs: GameState, read: (name: string) => string[]): void {
+  gs.boxSkeleton.destroy()
+  gs.boxSkeleton.loadPOObject(read('objects/kit.po'), 2.15)
+  gs.boxSkeleton.timeStep = 1
+
+  gs.bulletParts.destroy()
+  gs.bulletParts.timeStep = 1
+  gs.bulletParts.gravity = gs.grav * 2.25
+  gs.bulletParts.eDamping = 0.99
+
+  gs.sparkParts.destroy()
+  gs.sparkParts.timeStep = 1
+  gs.sparkParts.gravity = gs.grav / 1.4
+  gs.sparkParts.eDamping = 0.998
+
+  gs.flagSkeleton.loadPOObject(read('objects/flag.po'), 4.0)
+  gs.paraSkeleton.loadPOObject(read('objects/para.po'), 5.0)
+  gs.statSkeleton.loadPOObject(read('objects/stat.po'), 4.0)
+  gs.rifleSkeleton10.loadPOObject(read('objects/karabin.po'), 1.0)
+  gs.rifleSkeleton11.loadPOObject(read('objects/karabin.po'), 1.1)
+  gs.rifleSkeleton18.loadPOObject(read('objects/karabin.po'), 1.8)
+  gs.rifleSkeleton22.loadPOObject(read('objects/karabin.po'), 2.2)
+  gs.rifleSkeleton28.loadPOObject(read('objects/karabin.po'), 2.8)
+  gs.rifleSkeleton36.loadPOObject(read('objects/karabin.po'), 3.6)
+  gs.rifleSkeleton37.loadPOObject(read('objects/karabin.po'), 3.7)
+  gs.rifleSkeleton39.loadPOObject(read('objects/karabin.po'), 3.9)
+  gs.rifleSkeleton43.loadPOObject(read('objects/karabin.po'), 4.3)
+  gs.rifleSkeleton50.loadPOObject(read('objects/karabin.po'), 5.0)
+  gs.rifleSkeleton55.loadPOObject(read('objects/karabin.po'), 5.5)
 }
 
 // Game.pas:502-509 IsTeamGame — sv_gamemode가 팀전 계열(TM/CTF/INF/HTF)인지.
