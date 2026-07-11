@@ -88,6 +88,29 @@ export interface GameState {
   // ── Client.pas:230 `Grav: Single = 0.06` (= cvar sv_gravity 기본값 0.06, Cvar.pas:985).
   grav: number
 
+  // ── Net.pas:841 `NoClientUpdateTime: array[1..MAX_PLAYERS] of Integer` — 클라 무응답 틱
+  // 카운터 (서버가 ServerLoop.pas:207에서 증가, 클라 패킷 수신 시 0 리셋). Sprites.pas:490/1138이
+  // ControlSprite 호출·제트 회복의 게이트로 참조. 네트워크 없는 로컬 심에선 항상 0
+  // (< CLIENTSTOPMOVE_RETRYS)이라 게이트가 항상 통과한다. 1-based, [0]은 더미.
+  noClientUpdateTime: number[]
+
+  // ── Net.pas:840 `ServerTickCounter: Integer` — AppOnIdle(ServerLoop.pas:45)이 틱마다 증가.
+  serverTickCounter: number
+
+  // ── Game.pas:91 `SinusCounter: Single = 0` — 점멸 효과용 사인 카운터. ServerLoop.pas:484가
+  // ILUMINATESPEED씩 증가시키고, TSprite.Update(Sprites.pas:1149)가 CeaseFire 알파 점멸에 사용.
+  sinusCounter: number
+
+  // ── Game.pas:36 `BulletTimeTimer: Integer` (zero-init 0) — 불릿타임 잔여 틱.
+  // ServerLoop UpdateFrame:363-370이 감소/해제 (ToggleBulletTime은 TODO(M2)).
+  bulletTimeTimer: number
+
+  // ── Server.pas:264 `WaveRespawnTime, WaveRespawnCounter: Integer` — 웨이브 리스폰 주기/카운터
+  // (ServerLoop.pas:487-489). WaveRespawnTime 계산(ServerHelper.pas:236-241, 인원수 비례)은
+  // TODO(M2) — 지금은 zero-init 그대로.
+  waveRespawnTime: number
+  waveRespawnCounter: number
+
   // ── Cvar.pas 서버 cvar들 (기본값 그대로; 원본 이름 주석).
   svSurvivalmode: boolean // sv_survivalmode = False (Cvar.pas:975)
   svSurvivalmodeClearweapons: boolean // sv_survivalmode_clearweapons = False (Cvar.pas:977)
@@ -122,6 +145,12 @@ export function createGameState(): GameState {
     wasChangingWeapon: false,
     wasThrowingWeapon: false,
     wasReloadingWeapon: false,
+    noClientUpdateTime: new Array(MAX_SPRITES + 1).fill(0),
+    serverTickCounter: 0,
+    sinusCounter: 0,
+    bulletTimeTimer: 0,
+    waveRespawnTime: 0,
+    waveRespawnCounter: 0,
     grav: 0.06,
     svSurvivalmode: false,
     svSurvivalmodeClearweapons: false,

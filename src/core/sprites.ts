@@ -92,10 +92,15 @@ import {
   DEFAULTAIMDIST,
   DEFAULT_IDLETIME,
   BONUS_NONE,
+  BONUS_PREDATOR,
+  PREDATORALPHA,
   WAYPOINTTIMEOUT,
   MAX_PUSHTICK,
   MAX_OLDPOS,
+  CLIENTSTOPMOVE_RETRYS,
+  PARA_SPEED,
 } from './constants'
+import { controlSprite } from './control'
 import type { GameState } from './state'
 
 /* ****************************************************************************
@@ -156,6 +161,12 @@ export const POS_PRONE = 4
 // Anims.pas:52 `const SCALE = 3` — LoadAnimObjects가 gostek.po 로드에 쓰는 유닛 로컬 상수
 // (anims.ts와 동일하게 로컬 정의 — Constants.SCALE과 별개, anims.ts 헤더 노트 참조).
 const ANIMS_SCALE = 3
+
+// TODO(M2): 총기 식별 자리표시자 — control.ts 헤더 규약과 동일. Weapons.pas Guns[] 미포팅이라
+// `Weapon.Num = Guns[X].Num` 꼴 비교는 GUN_EQ(false), `<>` 꼴은 GUN_NEQ(true)로 대체하고
+// 원본 조건을 인접 주석으로 보존한다 ("특수총이 아닌 일반 총 소지" 기본값).
+const GUN_EQ = false as boolean // Weapon.Num  =  Guns[X].Num
+const GUN_NEQ = true as boolean // Weapon.Num <> Guns[X].Num
 
 /* ****************************************************************************
  *                      TControl (Sprites.pas:69-73)                          *
@@ -533,12 +544,699 @@ export class TSprite {
     this.nextPush = Array.from({ length: MAX_PUSHTICK + 1 }, () => vector2(0, 0))
   }
 
-  /* ─────────────────────────── stubs (다른 태스크) ─────────────────────────── */
+  /* ──────────────────── update (Sprites.pas:438-1422) ─────────────────── */
 
-  // Task 11: Sprites.pas:439-... TSprite.Update
+  // Sprites.pas:438-1422 TSprite.Update — 스프라이트 틱 갱신 (스켈레톤 물리/애니메이션 전진/
+  // OnGround 판정/무기 타이머/사망체 시뮬레이션). 이동부 전체 번역; 클라 전용 사운드/스파크
+  // 라인은 주석 스텁, 무기 식별은 GUN_EQ/GUN_NEQ 규약 (파일 상단).
   update(): void {
-    // Task 11
+    const gs = this.gs
+    const num = this.num
+    const anims = gs.anims
+    const map = gs.map
+
+    // var i: Integer; MouseAim, P, M: TVector2; RNorm, LegVector: TVector2;
+    // BodyY, ArmS: Single; LegDistance: Single = 0.0
+    // ({$IFNDEF SERVER} k/RND/M3/M4/WeaponReloadSound — 클라 전용 출혈/사운드 변수, 미채택)
+    let bodyY = 0
+    let armS: number
+
+    // {$IFDEF SERVER} Trace — 로깅 생략
+
+    this.jetsCountPrev = this.jetsCount
+    this.weapon.reloadTimePrev = this.weapon.reloadTimeCount
+    this.weapon.fireIntervalPrev = this.weapon.fireIntervalCount
+
+    bodyY = 0
+
+    gs.spriteParts.velocity[num] = vec2Add(gs.spriteParts.velocity[num], this.nextPush[0])
+    // {$IFNDEF SERVER} NextPush 시프트 루프 — constants.ts가 클라 값(MAX_PUSHTICK=125)을
+    // 채택했으므로 시프트도 함께 채택. 서버 변형(MAX_PUSHTICK=0)은 단일 슬롯 "적용 후 클리어"라
+    // 푸시가 항상 슬롯 0에 쓰이는 한 관찰 동등 (상호배타 IFDEF 쌍의 일관 채택).
+    for (let i = 0; i <= MAX_PUSHTICK - 1; i++) {
+      this.nextPush[i] = cloneVec2(this.nextPush[i + 1])
+    }
+    this.nextPush[MAX_PUSHTICK].x = 0
+    this.nextPush[MAX_PUSHTICK].y = 0
+
+    // reload spas after shooting delay is over
+    if (
+      this.autoReloadWhenCanFire &&
+      (GUN_NEQ /* Sprite[Num].Weapon.Num <> Guns[SPAS12].Num */ ||
+        this.weapon.fireIntervalCount === 0)
+    ) {
+      this.autoReloadWhenCanFire = false
+
+      if (
+        GUN_EQ /* Sprite[Num].Weapon.Num = Guns[SPAS12].Num */ &&
+        this.bodyAnimation.id !== anims.roll.id &&
+        this.bodyAnimation.id !== anims.rollBack.id &&
+        this.bodyAnimation.id !== anims.change.id &&
+        this.weapon.ammoCount !== this.weapon.ammo
+      ) {
+        this.bodyApplyAnimation(anims.reload, 1)
+      }
+    }
+
+    // {$IFDEF SERVER} 변형 채택 — 클라: (ClientStopMovingCounter > 0)
+    if (
+      (this.player!.controlMethod === HUMAN &&
+        gs.noClientUpdateTime[num] < CLIENTSTOPMOVE_RETRYS) ||
+      this.player!.controlMethod === BOT
+    ) {
+      controlSprite(gs, this)
+    }
+
+    if (this.isSpectator()) {
+      this.deadMeat = true
+      // {$IFNDEF SERVER} if Num = MySprite then RespawnCounter := 19999;
+      //   GameMenuShow(LimboMenu, False) — 클라 UI, 미채택
+    }
+
+    this.skeleton.oldPos[21] = cloneVec2(this.skeleton.pos[21])
+    this.skeleton.oldPos[23] = cloneVec2(this.skeleton.pos[23])
+    this.skeleton.oldPos[25] = cloneVec2(this.skeleton.pos[25])
+    this.skeleton.pos[21] = cloneVec2(this.skeleton.pos[9])
+    this.skeleton.pos[23] = cloneVec2(this.skeleton.pos[12])
+    this.skeleton.pos[25] = cloneVec2(this.skeleton.pos[5])
+    if (!this.deadMeat) {
+      // 원본 그대로: Vec2Add는 함수(Vector.pas:119)인데 여기서 문장으로 호출돼 반환값이
+      // 버려진다 — 이 세 줄은 사실상 no-op (Pos[21/23/25] 불변). "고치지 않고" 보존.
+      void vec2Add(this.skeleton.pos[21], gs.spriteParts.velocity[num])
+      void vec2Add(this.skeleton.pos[23], gs.spriteParts.velocity[num])
+      void vec2Add(this.skeleton.pos[25], gs.spriteParts.velocity[num])
+    }
+
+    switch (this.position) {
+      case POS_STAND:
+        bodyY = 8
+        break
+      case POS_CROUCH:
+        bodyY = 9
+        break
+      case POS_PRONE: {
+        if (this.bodyAnimation.id === anims.prone.id) {
+          if (this.bodyAnimation.currFrame > 9) bodyY = -2
+          else bodyY = 14 - this.bodyAnimation.currFrame
+        } else {
+          bodyY = 9
+        }
+
+        if (this.bodyAnimation.id === anims.proneMove.id) bodyY = 0
+        break
+      }
+    }
+
+    if (this.bodyAnimation.id === anims.getUp.id) {
+      if (this.bodyAnimation.currFrame > 18) bodyY = 8
+      else bodyY = 4
+    }
+
+    if (this.flagGrabCooldown > 0) this.flagGrabCooldown--
+
+    // Reset the background poly test before collision checks on the corpse
+    if (this.deadMeat) this.bgState.backgroundTestPrepare()
+
+    if (this.control.mouseAimX >= gs.spriteParts.pos[num].x) this.direction = 1
+    else this.direction = -1
+
+    for (let i = 1; i <= 20; i++) {
+      if (this.skeleton.active[i] && !this.deadMeat) {
+        this.skeleton.oldPos[i] = cloneVec2(this.skeleton.pos[i])
+
+        if (!this.halfDead) {
+          // legs
+          if (
+            i === 1 || i === 4 || i === 2 || i === 3 || i === 5 || i === 6 ||
+            i === 17 || i === 18
+          ) {
+            this.skeleton.pos[i].x =
+              gs.spriteParts.pos[num].x +
+              this.direction * this.legsAnimation.frames[this.legsAnimation.currFrame].pos[i].x
+            this.skeleton.pos[i].y =
+              gs.spriteParts.pos[num].y +
+              this.legsAnimation.frames[this.legsAnimation.currFrame].pos[i].y
+          }
+        }
+
+        // body
+        if (
+          i === 7 || i === 8 || i === 9 || i === 10 || i === 11 || i === 12 ||
+          i === 13 || i === 14 || i === 15 || i === 16 || i === 19 || i === 20
+        ) {
+          this.skeleton.pos[i].x =
+            gs.spriteParts.pos[num].x +
+            this.direction * this.bodyAnimation.frames[this.bodyAnimation.currFrame].pos[i].x
+          if (!this.halfDead) {
+            this.skeleton.pos[i].y =
+              this.skeleton.pos[6].y -
+              (gs.spriteParts.pos[num].y - bodyY) +
+              gs.spriteParts.pos[num].y +
+              this.bodyAnimation.frames[this.bodyAnimation.currFrame].pos[i].y
+          } else {
+            this.skeleton.pos[i].y =
+              9 +
+              gs.spriteParts.pos[num].y +
+              this.bodyAnimation.frames[this.bodyAnimation.currFrame].pos[i].y
+          }
+        }
+      }
+    }
+
+    if (!this.deadMeat) {
+      // Rotate parts
+      // head
+      {
+        const i = 12
+        const p = vector2(this.skeleton.pos[i].x, this.skeleton.pos[i].y)
+        const mouseAim = vector2(this.control.mouseAimX, this.control.mouseAimY)
+        let rNorm = vec2Subtract(p, mouseAim)
+        rNorm = vec2Normalize(rNorm)
+        rNorm = vec2Scale(rNorm, 0.1)
+        this.skeleton.pos[i].x = this.skeleton.pos[9].x - this.direction * rNorm.y
+        this.skeleton.pos[i].y = this.skeleton.pos[9].y + this.direction * rNorm.x
+
+        rNorm = vec2Scale(rNorm, 50)
+        this.skeleton.pos[23].x = this.skeleton.pos[9].x - this.direction * rNorm.y
+        this.skeleton.pos[23].y = this.skeleton.pos[9].y + this.direction * rNorm.x
+      }
+
+      if (this.bodyAnimation.id === anims.throw.id) armS = -5
+      else armS = -7
+
+      // arm
+      {
+        const i = 15
+        if (
+          this.bodyAnimation.id !== anims.reload.id &&
+          this.bodyAnimation.id !== anims.reloadBow.id &&
+          this.bodyAnimation.id !== anims.clipIn.id &&
+          this.bodyAnimation.id !== anims.clipOut.id &&
+          this.bodyAnimation.id !== anims.slideBack.id &&
+          this.bodyAnimation.id !== anims.change.id &&
+          this.bodyAnimation.id !== anims.throwWeapon.id &&
+          this.bodyAnimation.id !== anims.weaponNone.id &&
+          this.bodyAnimation.id !== anims.punch.id &&
+          this.bodyAnimation.id !== anims.roll.id &&
+          this.bodyAnimation.id !== anims.rollBack.id &&
+          this.bodyAnimation.id !== anims.cigar.id &&
+          this.bodyAnimation.id !== anims.match.id &&
+          this.bodyAnimation.id !== anims.smoke.id &&
+          this.bodyAnimation.id !== anims.wipe.id &&
+          this.bodyAnimation.id !== anims.takeOff.id &&
+          this.bodyAnimation.id !== anims.groin.id &&
+          this.bodyAnimation.id !== anims.piss.id &&
+          this.bodyAnimation.id !== anims.mercy.id &&
+          this.bodyAnimation.id !== anims.mercy2.id &&
+          this.bodyAnimation.id !== anims.victory.id &&
+          this.bodyAnimation.id !== anims.own.id &&
+          this.bodyAnimation.id !== anims.melee.id
+        ) {
+          let p = vector2(this.skeleton.pos[i].x, this.skeleton.pos[i].y)
+          const mouseAim = vector2(this.control.mouseAimX, this.control.mouseAimY)
+          let rNorm = vec2Subtract(p, mouseAim)
+          rNorm = vec2Normalize(rNorm)
+          rNorm = vec2Scale(rNorm, armS)
+          const m = vector2(this.skeleton.pos[16].x, this.skeleton.pos[16].y)
+          p = vec2Add(m, rNorm)
+          this.skeleton.pos[i].x = p.x
+          this.skeleton.pos[i].y = p.y
+        }
+      }
+
+      if (this.bodyAnimation.id === anims.throw.id) armS = -6
+      else armS = -8
+
+      // arm
+      {
+        const i = 19
+        if (
+          this.bodyAnimation.id !== anims.reload.id &&
+          this.bodyAnimation.id !== anims.reloadBow.id &&
+          this.bodyAnimation.id !== anims.clipIn.id &&
+          this.bodyAnimation.id !== anims.clipOut.id &&
+          this.bodyAnimation.id !== anims.slideBack.id &&
+          this.bodyAnimation.id !== anims.change.id &&
+          this.bodyAnimation.id !== anims.throwWeapon.id &&
+          this.bodyAnimation.id !== anims.weaponNone.id &&
+          this.bodyAnimation.id !== anims.punch.id &&
+          this.bodyAnimation.id !== anims.roll.id &&
+          this.bodyAnimation.id !== anims.rollBack.id &&
+          this.bodyAnimation.id !== anims.cigar.id &&
+          this.bodyAnimation.id !== anims.match.id &&
+          this.bodyAnimation.id !== anims.smoke.id &&
+          this.bodyAnimation.id !== anims.wipe.id &&
+          this.bodyAnimation.id !== anims.takeOff.id &&
+          this.bodyAnimation.id !== anims.groin.id &&
+          this.bodyAnimation.id !== anims.piss.id &&
+          this.bodyAnimation.id !== anims.mercy.id &&
+          this.bodyAnimation.id !== anims.mercy2.id &&
+          this.bodyAnimation.id !== anims.victory.id &&
+          this.bodyAnimation.id !== anims.own.id &&
+          this.bodyAnimation.id !== anims.melee.id
+        ) {
+          let p = vector2(this.skeleton.pos[i].x, this.skeleton.pos[i].y)
+          const mouseAim = vector2(this.control.mouseAimX, this.control.mouseAimY)
+          let rNorm = vec2Subtract(p, mouseAim)
+          rNorm = vec2Normalize(rNorm)
+          rNorm = vec2Scale(rNorm, armS)
+          const m = vector2(this.skeleton.pos[16].x, this.skeleton.pos[16].y - 4)
+          p = vec2Add(m, rNorm)
+          this.skeleton.pos[i].x = p.x
+          this.skeleton.pos[i].y = p.y
+        }
+      }
+    }
+
+    for (let i = 1; i <= 20; i++) {
+      // dead part
+      // Pascal 연산자 우선순위 그대로: `DeadMeat or HalfDead and IsNotSpectator()` 는
+      // and가 먼저 → DeadMeat or (HalfDead and IsNotSpectator())
+      if (this.deadMeat || (this.halfDead && this.isNotSpectator())) {
+        if (
+          i !== 17 && i !== 18 && i !== 19 && i !== 20 && i !== 8 && i !== 7 && i < 21
+        ) {
+          this.onGround = this.checkSkeletonMapCollision(
+            i,
+            this.skeleton.pos[i].x,
+            this.skeleton.pos[i].y,
+          )
+        }
+
+        // {$IFNDEF SERVER} 출혈(끊긴 constraint에서 CreateSpark 5/4) + 시체 화염
+        //   (CreateSpark 36/37, PlaySound SFX_ONFIRE/SFX_FIRECRACK) 블록
+        //   (Sprites.pas:717-784) — TODO(M2/render)
+      }
+    }
+
+    // If no background poly contact in CheckSkeletonMapCollision() then reset any background
+    // poly status
+    if (this.deadMeat) this.bgState.backgroundTestReset()
+
+    // {$IFDEF SERVER} Trace('TSprite.Update 2') — 로깅 생략
+
+    if (!this.deadMeat) {
+      switch (this.style) {
+        case 1: {
+          this.bodyAnimation.doAnimation()
+          this.legsAnimation.doAnimation()
+
+          this.checkOutOfBounds()
+
+          this.onGround = false
+
+          // {$IFNDEF SERVER} if OldDeadMeat then Respawn; OldDeadMeat := DeadMeat —
+          //   클라 스냅샷 기반 리스폰 경로. 서버 변형은 dead 분기의 RespawnCounter 경로만
+          //   사용하므로 미채택 (상호배타 리스폰 경로의 이중 채택 금지).
+
+          // Reset the background poly test before collision checks
+          this.bgState.backgroundTestPrepare()
+
+          // head
+          this.checkMapCollision(
+            gs.spriteParts.pos[num].x - 3.5,
+            gs.spriteParts.pos[num].y - 12,
+            1,
+          )
+
+          this.checkMapCollision(
+            gs.spriteParts.pos[num].x + 3.5,
+            gs.spriteParts.pos[num].y - 12,
+            1,
+          )
+
+          bodyY = 0
+          armS = 0
+
+          // Walking either left or right (though only one can be active at once)
+          if (this.control.left !== this.control.right) {
+            // If walking in facing direction
+            if (this.control.left !== (this.direction === 1)) armS = 0.25
+            // Walking backwards
+            else bodyY = 0.25
+          }
+
+          // If a leg is inside a polygon, caused by the modification of ArmS and BodyY,
+          // this is there to not lose contact to ground on slope polygons
+          if (bodyY === 0) {
+            const legVector = vector2(
+              gs.spriteParts.pos[num].x + 2,
+              gs.spriteParts.pos[num].y + 1.9,
+            )
+            // Map.RayCast(LegVector, LegVector, LegDistance, 10) — var LegDistance는
+            // 이후 미사용 → 반환 객체의 distance 무시
+            if (map.rayCast(legVector, legVector, 10).hit) bodyY = 0.25
+          }
+          if (armS === 0) {
+            const legVector = vector2(
+              gs.spriteParts.pos[num].x - 2,
+              gs.spriteParts.pos[num].y + 1.9,
+            )
+            if (map.rayCast(legVector, legVector, 10).hit) armS = 0.25
+          }
+
+          // Legs collison check. If collided then don't check the other side as a possible
+          // double CheckMapCollision collision would result in too much of a ground
+          // repelling force. (Pascal `or`는 단락 평가 — || 로 동일하게 두 번째 호출 생략)
+          this.onGround = this.checkMapCollision(
+            gs.spriteParts.pos[num].x + 2,
+            gs.spriteParts.pos[num].y + 2 - bodyY,
+            0,
+          )
+
+          this.onGround =
+            this.onGround ||
+            this.checkMapCollision(
+              gs.spriteParts.pos[num].x - 2,
+              gs.spriteParts.pos[num].y + 2 - armS,
+              0,
+            )
+
+          // radius collison check
+          this.onGroundForLaw = this.checkRadiusMapCollision(
+            gs.spriteParts.pos[num].x,
+            gs.spriteParts.pos[num].y - 1,
+            this.onGround,
+          )
+
+          this.onGround =
+            this.checkMapVerticesCollision(
+              gs.spriteParts.pos[num].x,
+              gs.spriteParts.pos[num].y,
+              3,
+              this.onGround || this.onGroundForLaw,
+            ) || this.onGround
+
+          // Change the permanent state if the player has had the same OnGround state for
+          // two frames in a row
+          if (!(this.onGround !== this.onGroundLastFrame)) {
+            this.onGroundPermanent = this.onGround
+          }
+
+          this.onGroundLastFrame = this.onGround
+
+          // If no background poly contact then reset any background poly status
+          this.bgState.backgroundTestReset()
+
+          // WEAPON HANDLING
+          // {$IFNDEF SERVER} (Num = MySprite) or (FireInterval <= FIREINTERVAL_NET) or
+          //   not PointVisible(...) 게이트 — 서버 변형은 게이트 없이 항상 수행
+          if (
+            this.weapon.fireIntervalCount > 0 &&
+            (this.weapon.ammoCount > 0 || GUN_EQ /* Weapon.Num = Guns[SPAS12].Num */)
+          ) {
+            this.weapon.fireIntervalPrev = this.weapon.fireIntervalCount
+            this.weapon.fireIntervalCount--
+          }
+
+          // If fire button is released, then the reload can begin
+          if (!this.control.fire) this.canAutoReloadSpas = true
+
+          // reload
+          if (
+            this.weapon.ammoCount === 0 &&
+            (GUN_EQ /* Weapon.Num = Guns[CHAINSAW].Num */ ||
+              (this.bodyAnimation.id !== anims.roll.id &&
+                this.bodyAnimation.id !== anims.rollBack.id &&
+                this.bodyAnimation.id !== anims.melee.id &&
+                this.bodyAnimation.id !== anims.change.id &&
+                this.bodyAnimation.id !== anims.throw.id &&
+                this.bodyAnimation.id !== anims.throwWeapon.id))
+          ) {
+            // {$IFNDEF SERVER} SetSoundPaused(ReloadSoundChannel, False) — TODO(M2/render)
+
+            if (this.bodyAnimation.id !== anims.getUp.id) {
+              // spas is unique - it does the fire interval delay AND THEN reloads. all other
+              // weapons do the opposite.
+              if (GUN_EQ /* Weapon.Num = Guns[SPAS12].Num */) {
+                if (this.weapon.fireIntervalCount === 0 && this.canAutoReloadSpas) {
+                  this.bodyApplyAnimation(anims.reload, 1)
+                }
+              } else if (
+                GUN_EQ /* Weapon.Num = Guns[BOW].Num */ ||
+                GUN_EQ /* Weapon.Num = Guns[BOW2].Num */
+              ) {
+                this.bodyApplyAnimation(anims.reloadBow, 1)
+              } else if (
+                this.bodyAnimation.id !== anims.clipIn.id &&
+                this.bodyAnimation.id !== anims.slideBack.id
+              ) {
+                // Don't show reload animation for chainsaw if one of these animations are
+                // already ongoing
+                if (
+                  GUN_NEQ /* Weapon.Num <> Guns[CHAINSAW].Num */ ||
+                  (this.bodyAnimation.id !== anims.roll.id &&
+                    this.bodyAnimation.id !== anims.rollBack.id &&
+                    this.bodyAnimation.id !== anims.melee.id &&
+                    this.bodyAnimation.id !== anims.change.id &&
+                    this.bodyAnimation.id !== anims.throw.id &&
+                    this.bodyAnimation.id !== anims.throwWeapon.id)
+                ) {
+                  this.bodyApplyAnimation(anims.clipOut, 1)
+                }
+              }
+
+              this.burstCount = 0
+            }
+
+            // {$IFNDEF SERVER} 무기별 장전 사운드 선택(PlaySound) + ClipOutTime 도달 시
+            //   탄창 배출 CreateSpark 블록 (Sprites.pas:944-1004) — TODO(M2/render)
+
+            if (GUN_NEQ /* Weapon.Num <> Guns[SPAS12].Num */) {
+              // Spas doesn't use the reload time.
+              // If it ever does, be sure to put this back outside.
+              this.weapon.reloadTimePrev = this.weapon.reloadTimeCount
+              if (this.weapon.reloadTimeCount > 0) this.weapon.reloadTimeCount--
+
+              // spas waits for fire interval to hit 0.
+              // doing this next line for the spas would cause it to never reload when empty.
+              this.weapon.fireIntervalPrev = this.weapon.fireInterval
+              this.weapon.fireIntervalCount = this.weapon.fireInterval
+
+              if (this.weapon.reloadTimeCount < 1) {
+                this.weapon.reloadTimePrev = this.weapon.reloadTime
+                this.weapon.fireIntervalPrev = this.weapon.fireInterval
+                this.weapon.reloadTimeCount = this.weapon.reloadTime
+                this.weapon.fireIntervalCount = this.weapon.fireInterval
+                this.weapon.startUpTimeCount = this.weapon.startUpTime
+                this.weapon.ammoCount = this.weapon.ammo
+              }
+            }
+          }
+
+          // weapon jam fix?
+          // TODO: check if server or client do stuff wrong here... (원본 주석 보존)
+          if (this.weapon.ammoCount === 0) {
+            // {$IFDEF SERVER} — 권위 로컬 심 채택
+            if (this.weapon.reloadTimeCount < 1) {
+              this.weapon.reloadTimeCount = this.weapon.reloadTime
+              this.weapon.fireIntervalCount = this.weapon.fireInterval
+              this.weapon.startUpTimeCount = this.weapon.startUpTime
+              this.weapon.ammoCount = this.weapon.ammo
+            }
+            if (this.weapon.reloadTimeCount > this.weapon.reloadTime) {
+              this.weapon.reloadTimeCount = this.weapon.reloadTime
+            }
+
+            if (GUN_NEQ /* Weapon.Num <> Guns[SPAS12].Num */) {
+              if (this.weapon.reloadTimeCount < 1) {
+                // {$IFDEF SERVER}
+                this.bodyApplyAnimation(anims.change, 36)
+                // {$ENDIF}
+                this.weapon.reloadTimePrev = this.weapon.reloadTime
+                this.weapon.fireIntervalPrev = this.weapon.fireInterval
+                this.weapon.reloadTimeCount = this.weapon.reloadTime
+                this.weapon.fireIntervalCount = this.weapon.fireInterval
+                this.weapon.startUpTimeCount = this.weapon.startUpTime
+                this.weapon.ammoCount = this.weapon.ammo
+              }
+
+              // {$IFNDEF SERVER} ReloadTimeCount 클램프 + "didn't we just do this right
+              //   above? :S" 중복 리필/Change(36) 블록 (Sprites.pas:1062-1081) — 서버 변형
+              //   미채택 (직전 {$IFDEF SERVER} 블록과 상호배타)
+            }
+          }
+
+          // {$IFNDEF SERVER} 체인소 연기/사운드(1086-1109), LAW·체인소 탄약 소진 연기
+          //   (1112-1124), 화염 화살 스파크(1127-1133) — TODO(M2/render)
+
+          // JETS
+          // {$IFDEF SERVER} 변형 채택 — 클라: (ClientStopMovingCounter > 0)
+          if (
+            (this.player!.controlMethod === HUMAN &&
+              gs.noClientUpdateTime[num] < CLIENTSTOPMOVE_RETRYS) ||
+            this.player!.controlMethod === BOT
+          ) {
+            if (this.jetsCount < map.startJet && !this.control.jetpack) {
+              if (this.onGround || gs.mainTickCounter % 2 === 0) {
+                this.jetsCount++
+              }
+            }
+          }
+
+          if (this.ceaseFireCounter > -1) {
+            this.ceaseFireCounter = this.ceaseFireCounter - 1
+            this.alpha = pascalRound(Math.abs(100 + 70 * Math.sin(gs.sinusCounter)))
+          } else {
+            this.alpha = 255
+          }
+
+          if (this.bonusStyle === BONUS_PREDATOR) this.alpha = PREDATORALPHA
+
+          // {$IFNDEF SERVER} BERSERKER/FLAMEGOD 스파크(1160-1190), 부상 출혈
+          //   (Health < HURT_HEALTH, 1193-1205) — TODO(M2/render)
+
+          // BONUS time
+          if (this.bonusTime > -1) {
+            this.bonusTime = this.bonusTime - 1
+            if (this.bonusTime < 1) {
+              switch (this.bonusStyle) {
+                case BONUS_PREDATOR:
+                  this.alpha = 255
+                  break
+              }
+              this.bonusStyle = BONUS_NONE
+            }
+          } else {
+            this.bonusStyle = BONUS_NONE
+          }
+
+          // MULITKILL TIMER
+          if (this.multiKillTime > -1) {
+            this.multiKillTime = this.multiKillTime - 1
+          } else {
+            this.multiKills = 0
+          }
+
+          // gain health from bow
+          if (
+            gs.mainTickCounter % 3 === 0 &&
+            (GUN_EQ /* Weapon.Num = Guns[BOW].Num */ ||
+              GUN_EQ) /* Weapon.Num = Guns[BOW2].Num */ &&
+            this.health < gs.startHealth /* STARTHEALTH */
+          ) {
+            this.health = this.health + 1
+          }
+
+          // {$IFNDEF SERVER} 시가 연기(HasCigar = 10, 1242-1269), 겨울 입김
+          //   (Map.Weather = 3, 1272-1283) — TODO(M2/render)
+
+          // parachuter
+          this.para = 0
+          if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
+            // TODO(M2) Things: if Thing[HoldedThing].Style = OBJECT_PARACHUTE then Para := 1
+          }
+
+          if (this.para === 1) {
+            gs.spriteParts.forces[num].y = PARA_SPEED
+            // {$IFDEF SERVER} if CeaseFireCounter < 1 — 채택 (클라는 survival 확장 게이트)
+            if (this.ceaseFireCounter < 1) {
+              if (this.onGround || this.control.jetpack) {
+                if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
+                  // TODO(M2) Things: 낙하산 분리 — Thing[HoldedThing].HoldingSprite := 0;
+                  //   Dec(Thing[HoldedThing].Skeleton.ConstraintCount);
+                  //   Thing[HoldedThing].TimeOut := 3 * 60; HoldedThing := 0
+                }
+              }
+            }
+          }
+
+          // {$IFDEF SERVER} Trace('TSprite.Update 3e') — 로깅 생략
+
+          this.skeleton.doVerletTimeStepFor(22, 29)
+          this.skeleton.doVerletTimeStepFor(24, 30)
+
+          // {$IFNDEF SERVER} Ping Impr — OldSpritePos 시프트(1320-1323). 서버 변형은
+          //   game.ts updateFrame 루프(ServerLoop.pas:282-290)에서 수행 → 미채택.
+          break
+        } // 1
+      } // case
+    }
+
+    if (this.deadMeat) {
+      if (this.isNotSpectator()) {
+        // physically integrate skeleton particles
+        this.skeleton.doVerletTimeStep()
+
+        gs.spriteParts.pos[num] = cloneVec2(this.skeleton.pos[12])
+
+        // Ping Impr (양 빌드 공통 — 죽은 스프라이트는 UpdateFrame 루프의 시프트 대상이 아님)
+        for (let i = MAX_OLDPOS; i >= 1; i--) {
+          gs.oldSpritePos[num][i] = cloneVec2(gs.oldSpritePos[num][i - 1])
+        }
+
+        gs.oldSpritePos[num][0] = cloneVec2(gs.spriteParts.pos[num])
+
+        this.checkSkeletonOutOfBounds()
+
+        // Respawn Countdown
+        // {$IFDEF SERVER} — 권위 로컬 심의 리스폰 경로
+        if (this.respawnCounter < 1) {
+          this.respawn()
+          // ServerSpriteSnapshotMajorSingle(Num, NETW) — 네트워크 스냅샷, TODO(M3)
+        }
+
+        this.respawnCounter = this.respawnCounter - 1
+
+        // {$IFNDEF SERVER} if RespawnCounter < -360 then Respawn — 클라 폴백, 미채택
+
+        // {$IFDEF SERVER} survival 라운드 종료 처리 — 채택
+        if (gs.svSurvivalmode) {
+          if (this.respawnCounter === 1) {
+            if (!gs.survivalEndRound) {
+              this.respawnCounter += 2
+            } else {
+              if (this.respawnCounter < 3) {
+                for (let i = 1; i <= MAX_SPRITES; i++) {
+                  if (gs.sprite[i].active && !gs.sprite[i].deadMeat) {
+                    const p = vector2(0, 0) // P := Default(TVector2)
+                    gs.sprite[i].healthHit(4000, i, 1, -1, p) // TODO(M2) stub
+                    gs.sprite[i].player!.deaths--
+                  }
+                }
+              }
+
+              // TODO(M2) Things: HTF가 아닌 모드에서 TeamFlag[1/2]가 미귀환이면
+              //   Thing[TeamFlag[...]].Respawn (Sprites.pas:1380-1387)
+            }
+          }
+        }
+
+        // parachuter
+        this.para = 0
+        if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
+          // TODO(M2) Things: if Thing[HoldedThing].Style = OBJECT_PARACHUTE then Para := 1
+        }
+
+        if (this.para === 1) {
+          this.skeleton.forces[12].y = 25 * PARA_SPEED
+          if (this.onGround) {
+            if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
+              // TODO(M2) Things: 낙하산 분리 (Sprites.pas:1403-1406)
+            }
+          }
+        }
+
+        this.deadTime++
+      } // DeadMeat
+    }
+
+    // Safety
+    if (gs.spriteParts.velocity[num].x > MAX_VELOCITY) {
+      gs.spriteParts.velocity[num].x = MAX_VELOCITY
+    }
+    if (gs.spriteParts.velocity[num].x < -MAX_VELOCITY) {
+      gs.spriteParts.velocity[num].x = -MAX_VELOCITY
+    }
+    if (gs.spriteParts.velocity[num].y > MAX_VELOCITY) {
+      gs.spriteParts.velocity[num].y = MAX_VELOCITY
+    }
+    if (gs.spriteParts.velocity[num].y < -MAX_VELOCITY) {
+      gs.spriteParts.velocity[num].y = -MAX_VELOCITY
+    }
   }
+
+  /* ─────────────────────────── stubs (다른 태스크) ─────────────────────────── */
 
   // TODO(M2): Sprites.pas TSprite.Kill
   kill(): void {}
