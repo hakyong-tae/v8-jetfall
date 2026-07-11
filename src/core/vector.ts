@@ -1,5 +1,9 @@
-// 범용 2D 벡터 (원본 Vector.pas는 MPL 라이선스라 번역하지 않고 표준 연산 직접 작성)
+// 범용 2D/3D 벡터 (원본 Vector.pas는 MPL 라이선스라 번역하지 않고 표준 연산 직접 작성)
 export interface TVector2 { x: number; y: number }
+
+// Pascal TVector3 (Vector.pas, MPL) 형태만 대응 — x,y,z 필드 전용, 연산 미구현
+// (MapFile.pas의 TMapPolygon.Normals: array[1..3] of TVector3 에서 필요)
+export interface TVector3 { x: number; y: number; z: number }
 
 export function vector2(x: number, y: number): TVector2 { return { x, y } }
 export function cloneVec2(v: TVector2): TVector2 { return { x: v.x, y: v.y } }
