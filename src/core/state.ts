@@ -10,7 +10,14 @@ import { PolyMap } from './polymap'
 import type { TAnimation } from './anims'
 import { type TVector2, vector2 } from './vector'
 import { TSprite, MAX_SPRITES } from './sprites'
-import { DEFAULT_CEASEFIRE_TIME, MAX_OLDPOS } from './constants'
+import {
+  DEFAULT_CEASEFIRE_TIME,
+  MAX_OLDPOS,
+  GAMESTYLE_TEAMMATCH,
+  GAMESTYLE_CTF,
+  GAMESTYLE_INF,
+  GAMESTYLE_HTF,
+} from './constants'
 
 export interface GameState {
   ticks: number
@@ -60,6 +67,24 @@ export interface GameState {
   // BodyApplyAnimation이 사용).
   wasReloading: boolean
 
+  // ── Game.pas:78 `MapChangeCounter: Integer` — 맵 전환 카운트다운 (전환 중 > 0; 평시엔
+  // Server.pas가 -60으로 리셋). Control.pas:301-302가 조작 잠금에 사용. 전역 zero-init = 0.
+  mapChangeCounter: number
+
+  // ── Control.pas:25-34 {$IFNDEF SERVER} 유닛 전역 — 로컬 플레이어(MySprite)의 "직전 틱 키
+  // 상태"로, 동시 키 입력 해석(좌+우 방향 결정, nade/change/throw/reload 충돌 해소)에 쓰인다.
+  // 이 포트는 권위 로컬 심이라 인간 스프라이트가 곧 로컬 플레이어 — controlSprite가 HUMAN
+  // 스프라이트에 대해 이 블록을 채택한다 (control.ts 헤더 참조). 원본 스코프는 유닛 전역이지만
+  // 모듈 전역 금지 규약(파일 헤더)에 따라 GameState로 승격.
+  // ⚠ 인간 스프라이트가 동시에 2명 이상이면 원본(단일 로컬 플레이어)에는 없던 상태 공유가 생긴다.
+  // (FreeCamPressed는 미채택 — 클라 관전 카메라 블록(Control.pas:213-255) 전용.)
+  wasRunningLeft: boolean
+  wasJumping: boolean
+  wasThrowingGrenade: boolean
+  wasChangingWeapon: boolean
+  wasThrowingWeapon: boolean
+  wasReloadingWeapon: boolean
+
   // ── Client.pas:230 `Grav: Single = 0.06` (= cvar sv_gravity 기본값 0.06, Cvar.pas:985).
   grav: number
 
@@ -90,6 +115,13 @@ export function createGameState(): GameState {
     startHealth: 150,
     spriteMapColCount: 0,
     wasReloading: false,
+    mapChangeCounter: 0,
+    wasRunningLeft: false,
+    wasJumping: false,
+    wasThrowingGrenade: false,
+    wasChangingWeapon: false,
+    wasThrowingWeapon: false,
+    wasReloadingWeapon: false,
     grav: 0.06,
     svSurvivalmode: false,
     svSurvivalmodeClearweapons: false,
@@ -102,4 +134,17 @@ export function createGameState(): GameState {
   // MAX_SPRITES개를 미리 만들어 둔다. [0]은 1-based 더미.
   gs.sprite = Array.from({ length: MAX_SPRITES + 1 }, (_, i) => new TSprite(gs, i))
   return gs
+}
+
+// Game.pas:502-509 IsTeamGame — sv_gamemode가 팀전 계열(TM/CTF/INF/HTF)인지.
+export function isTeamGame(gs: GameState): boolean {
+  switch (gs.svGamemode) {
+    case GAMESTYLE_TEAMMATCH:
+    case GAMESTYLE_CTF:
+    case GAMESTYLE_INF:
+    case GAMESTYLE_HTF:
+      return true
+    default:
+      return false
+  }
 }

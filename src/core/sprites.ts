@@ -338,7 +338,8 @@ export function createTPlayer(): TPlayer {
  **************************************************************************** */
 
 // Pascal의 `LegsAnimation := Anim`은 TAnimation object 값 복사 (frames 포함 전체).
-function cloneAnimation(src: TAnimation): TAnimation {
+// (control.ts도 직접 record 대입 라인들 — `LegsAnimation := GetUp/Roll/...` — 에서 사용.)
+export function cloneAnimation(src: TAnimation): TAnimation {
   const a = new TAnimation()
   a.id = src.id
   a.numFrames = src.numFrames
