@@ -1133,8 +1133,9 @@ export class TSprite {
     const spritePartsPos = gs.spriteParts.pos[this.num]
 
     if (Math.abs(spritePartsPos.x) > bound || Math.abs(spritePartsPos.y) > bound) {
-      // {$IFNDEF SERVER} RandomizeStart(SpriteParts.Pos[Num], Player.Team);
-      gs.spriteParts.pos[this.num] = randomizeStart(gs, this.player!.team).start
+      // {$IFNDEF SERVER} RandomizeStart(SpriteParts.Pos[Num], Player.Team) — 미채택.
+      // 이 포트는 권위 로컬 심(서버 변형)이라 스폰 선택은 Respawn 내부의 {$IFDEF SERVER}
+      // RandomizeStart 한 번만 수행한다 (두 분기는 원본에서 빌드별 상호배타).
       this.respawn()
     }
   }
@@ -1151,8 +1152,8 @@ export class TSprite {
       const skeletonPos = this.skeleton.pos[i]
 
       if (Math.abs(skeletonPos.x) > bound || Math.abs(skeletonPos.y) > bound) {
-        // {$IFNDEF SERVER} RandomizeStart(SpriteParts.Pos[Num], Player.Team);
-        gs.spriteParts.pos[this.num] = randomizeStart(gs, this.player!.team).start
+        // {$IFNDEF SERVER} RandomizeStart(SpriteParts.Pos[Num], Player.Team) — 미채택.
+        // 스폰 선택은 Respawn 내부의 {$IFDEF SERVER} RandomizeStart 한 번만 (checkOutOfBounds 참조).
         this.respawn()
         break
       }
