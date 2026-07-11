@@ -14,16 +14,14 @@
 // 실패(원본의 Result:=False; Exit)는 오직 각 섹션의 개수(n)가 음수이거나 해당 MAX_*
 // 한도를 넘을 때만 발생하며, 그 경우 이 포트는 Error를 throw한다.
 //
-// MAX_* 상수는 Constants.pas가 아니라 PolyMap.pas / Waypoints.pas에 있다(그 유닛들은
-// 아직 포팅되지 않았음) — 출처를 주석으로 남기고 여기 로컬로 정의한다.
+// MAX_* 상수는 Constants.pas가 아니라 PolyMap.pas / Waypoints.pas에 있다. PolyMap.pas가 이제
+// 포팅되었으므로(polymap.ts) MAX_POLYS/MAX_SECTOR/MAX_PROPS/MAX_SPAWNPOINTS/MAX_COLLIDERS는
+// 거기서 import한다(단일 출처 — 이 파일에 중복 정의하지 않는다). Waypoints.pas는 아직
+// 포팅되지 않았으므로 MAX_WAYPOINTS/MAX_CONNECTIONS만 로컬로 남는다.
 
 import type { TVector3 } from './vector'
+import { MAX_POLYS, MAX_SECTOR, MAX_PROPS, MAX_SPAWNPOINTS, MAX_COLLIDERS } from './polymap'
 
-const MAX_POLYS = 5000 // PolyMap.pas:8
-const MAX_SECTOR = 25 // PolyMap.pas:10
-const MAX_PROPS = 500 // PolyMap.pas:16
-const MAX_SPAWNPOINTS = 255 // PolyMap.pas:17
-const MAX_COLLIDERS = 128 // PolyMap.pas:18
 const MAX_WAYPOINTS = 5000 // Waypoints.pas:14
 const MAX_CONNECTIONS = 20 // Waypoints.pas:15
 
