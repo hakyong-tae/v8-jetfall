@@ -12,6 +12,7 @@ import { type TVector2, vector2 } from './vector'
 import { TSprite, MAX_SPRITES, MAX_BULLETS, MAX_SPARKS, MAX_THINGS } from './sprites'
 import { TSpark } from './sparks'
 import { TBullet } from './bullets'
+import { TThing } from './things'
 import {
   DEFAULT_CEASEFIRE_TIME,
   MAX_OLDPOS,
@@ -22,16 +23,11 @@ import {
 } from './constants'
 
 // ── PLACEHOLDER TYPES (M2 Task 2) ───────────────────────────────────────────
-// Things.pas/Waypoints.pas aren't ported yet (Tasks 5/11 create things.ts/waypoints.ts). These
-// minimal stand-ins exist only so the M2 entity arrays/fields below can be typed now. Each later
-// task DELETES its stub here and replaces the import with the real type — same field name in
-// GameState, so no call-site changes are needed elsewhere. Do not add real behavior/fields to
-// these stubs; the real class in its own module is authoritative.
-// (TBullet은 Task 4에서 bullets.ts의 실제 클래스로 교체 완료 — 위 import 참조.)
-// TODO(T5): delete — things.ts will export the real TThing (Things.pas:13-47 TThing record).
-export interface TThing {
-  active: boolean
-}
+// Waypoints.pas isn't ported yet (Task 11 creates waypoints.ts). This minimal stand-in exists only
+// so the field below can be typed now. Task 11 DELETES this stub and replaces the import with the
+// real type — same field name in GameState, so no call-site changes are needed elsewhere.
+// (TBullet은 Task 4에서 bullets.ts의, TThing은 Task 5에서 things.ts의 실제 클래스로 교체 완료 —
+// 위 import 참조.)
 // TODO(T11): delete — waypoints.ts will export the real TWaypoints (Waypoints.pas:31-34 object:
 // `Waypoint: array[1..MAX_WAYPOINTS] of TWaypoint` + `FindClosest` method).
 export interface TWaypoints {
@@ -159,6 +155,13 @@ export interface GameState {
   // 규약대로 실제 초기 동작인 Value=False를 채택한다.
   svStationaryguns: boolean
 
+  // ── M2 Task 5 추가분 (Things.pas CreateThing이 읽는 cvar들 — "발견 시 추가" 규약).
+  svGunsCollide: boolean // sv_guns_collide, Value=False (Cvar.pas:973)
+  svKitsCollide: boolean // sv_kits_collide, Value=False (Cvar.pas:974)
+  // sv_respawntime (Cvar.pas:828/851 — 서버/클라 등록 코드 양쪽 모두 Value=360). 메디킷
+  // TimeOut(= sv_respawntime * GUNRESISTTIME, Things.pas:349)과 리스폰 카운터가 읽는다.
+  svRespawntime: number
+
   // ── Game.pas:115 `Bullet: array[1..MAX_BULLETS] of TBullet` — 탄환 슬롯, 1-based
   // ([0]은 더미). bullets.ts(Task 4)의 실제 TBullet — sprite 배열과 동일하게 MAX_BULLETS+1개를
   // createGameState()에서 `new TBullet(gs, i)`로 사전생성한다 (원본은 값 타입 배열이라 항상
@@ -171,7 +174,8 @@ export interface GameState {
   bulletParts: ParticleSystem
 
   // ── Game.pas:119 `Thing: array[1..MAX_THINGS] of TThing` — 깃발/키트/무기드롭 슬롯, 1-based.
-  // TThing은 Task 5(things.ts)가 이관하기 전까지 placeholder 타입 (`{active:false}` 사전할당).
+  // things.ts(Task 5)의 실제 TThing — sprite/bullet 배열과 동일하게 사전생성 (원본은 값 타입
+  // 배열이라 항상 전부 존재).
   thing: TThing[]
 
   // ── Game.pas:117 `Spark: array[1..MAX_SPARKS] of TSpark` — 원본은 `{$IFNDEF SERVER}`
@@ -272,6 +276,9 @@ export function createGameState(): GameState {
     svBonusFrequency: 0,
     botsDifficulty: 100,
     svStationaryguns: false,
+    svGunsCollide: false,
+    svKitsCollide: false,
+    svRespawntime: 360,
     bullet: [],
     bulletParts: new ParticleSystem(),
     thing: [],
@@ -301,11 +308,10 @@ export function createGameState(): GameState {
   // Pascal의 Sprite 배열은 항상 존재하는 레코드들(Active 플래그로 사용 여부 표시) — 여기서도
   // MAX_SPRITES개를 미리 만들어 둔다. [0]은 1-based 더미.
   gs.sprite = Array.from({ length: MAX_SPRITES + 1 }, (_, i) => new TSprite(gs, i))
-  // Bullet/Thing/Spark도 Pascal에서는 값 타입 배열이라 항상 전부 존재한다. TBullet(Task 4)/
-  // TSpark(Task 3)는 실제 클래스라 gs.sprite와 동일하게 사전생성한다. TThing은 Task 5가
-  // 이관하기 전까지 placeholder 타입이라 `{active:false}` 인스턴스로 자리만 채워둔다.
+  // Bullet/Thing/Spark도 Pascal에서는 값 타입 배열이라 항상 전부 존재한다 — TBullet(Task 4)/
+  // TThing(Task 5)/TSpark(Task 3) 전부 gs.sprite와 동일하게 사전생성한다.
   gs.bullet = Array.from({ length: MAX_BULLETS + 1 }, (_, i) => new TBullet(gs, i))
-  gs.thing = Array.from({ length: MAX_THINGS + 1 }, () => ({ active: false }))
+  gs.thing = Array.from({ length: MAX_THINGS + 1 }, (_, i) => new TThing(gs, i))
   gs.spark = Array.from({ length: MAX_SPARKS + 1 }, (_, i) => new TSpark(i))
   return gs
 }

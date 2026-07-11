@@ -68,18 +68,16 @@ import {
   POLY_TYPE_BACKGROUND,
   POLY_TYPE_BACKGROUND_TRANSITION,
 } from './polymap'
-import { BULLET_TIMEOUT, ARROW_RESIST, SFX_GRENADE_BOUNCE, SFX_BULLETBY } from './constants'
+import { BULLET_TIMEOUT, ARROW_RESIST, SFX_GRENADE_BOUNCE, SFX_BULLETBY, OBJECT_COMBAT_KNIFE } from './constants'
 import { createSpark } from './sparks'
+import { createThing, type TThingCollision } from './things'
 import type { GameState } from './state'
 
 export { MAX_BULLETS }
 
 // Things.pas:8-11 TThingCollision — 탄환이 이미 부딪친 씽의 재충돌 쿨다운 기록.
-// TODO(T5): things.ts가 생기면 그쪽으로 이관하고 여기서는 re-export로 전환.
-export interface TThingCollision {
-  thingNum: number // Byte
-  cooldownEnd: number // LongInt
-}
+// T4에서 여기 임시 정의했다가 things.ts(T5)로 이관 — 기존 import 경로 호환을 위해 재수출.
+export type { TThingCollision }
 
 // Bullets.pas:59-68
 export const HIT_TYPE_WALL = 1
@@ -585,8 +583,8 @@ export class TBullet {
               case BULLET_STYLE_THROWNKNIFE: {
                 gs.bulletParts.pos[this.num] = vec2Subtract(pos, gs.bulletParts.velocity[this.num])
 
-                // create knife thing ({$IFDEF SERVER} — 규약 8a 채택 대상이나 Things.pas 미포팅)
-                // TODO(T5): CreateThing(BulletParts.Pos[Num], Owner, OBJECT_COMBAT_KNIFE, 255)
+                // create knife thing ({$IFDEF SERVER} — 규약 8a 채택, Bullets.pas:1344-1347)
+                createThing(gs, gs.bulletParts.pos[this.num], this.owner, OBJECT_COMBAT_KNIFE, 255)
 
                 this.hit(HIT_TYPE_WALL)
                 this.kill()

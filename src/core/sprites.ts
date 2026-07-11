@@ -11,8 +11,8 @@
 //   CheckOutOfBounds(3399), CheckSkeletonOutOfBounds(3424), Respawn(3455-3775),
 //   ResetSpriteOldPos(3776), GetMoveacc(4813), GetCursorAimDirection/GetHandsAimDirection
 //   (4852-4875), 팀/솔로 판정 헬퍼(4876-4915), CanRespawn(4916-4922).
-// * Things.pas:620-663 RandomizeStart도 여기 포함 (스폰 위치 선택 — Respawn이 의존, Things.pas
-//   본체는 미포팅. things.ts가 생기면 그쪽으로 이동/재수출 예정).
+// * Things.pas:620-663 RandomizeStart는 M1에서 여기 임시 거처였다가 M2 Task 5에서 things.ts로
+//   이동 (파일 하단에서 re-export — 기존 import 경로 호환).
 // * Anims.pas LoadAnimObjects 끝부분(SpriteParts/GostekSkeleton 셋업) → loadSpriteObjects().
 // * TSprite.Update → Task 11. Fire/Die/Kill/HealthHit/DropWeapon/ThrowFlag/ThrowGrenade/
 //   ApplyWeaponByNum/Parachute/ChangeTeam → TODO(M2) 스텁 (시그니처만).
@@ -53,7 +53,6 @@ import {
   PolyMap,
   pointInPoly,
   MIN_SECTORZ,
-  MAX_SPAWNPOINTS,
   POLY_TYPE_DOESNT,
   POLY_TYPE_ONLY_BULLETS,
   POLY_TYPE_ONLY_FLAGGERS,
@@ -102,6 +101,7 @@ import {
   PARA_SPEED,
 } from './constants'
 import { controlSprite } from './control'
+import { randomizeStart } from './things'
 import type { GameState } from './state'
 
 /* ****************************************************************************
@@ -2305,52 +2305,13 @@ export function teamCollides(map: PolyMap, poly: number, team: number, bullet: b
 }
 
 /* ****************************************************************************
- *              RandomizeStart (Things.pas:620-663 — 임시 거처)               *
+ *            RandomizeStart re-export (Things.pas:620-663)                   *
  **************************************************************************** */
 
-// Things.pas가 M2에서 포팅되면 things.ts로 이동한다. 스폰 선택 로직: 요청 팀의 활성
-// 스폰포인트 중 랜덤(±4/±4 지터), 해당 팀 스폰이 없으면(예: DM 맵에서 팀 요청, 또는 그 반대)
-// result=false + 전체 활성 스폰포인트로 폴백 — DM(team 0)/CTF(team 1,2) 등 모든 모드가 이
-// 한 함수로 커버된다.
-// var Start out-param → { result, start } 반환 객체 (calc.ts 규약).
-export function randomizeStart(gs: GameState, team: number): { result: boolean; start: TVector2 } {
-  const map = gs.map
-  let result = true
-
-  const start = vector2(0, 0)
-
-  // Spawns: array[1..255] of Integer := -1 — Pascal은 고정 크기 배열, 여기선 필요 슬롯만.
-  const spawns: number[] = new Array(MAX_SPAWNPOINTS + 1).fill(-1)
-
-  let spawnsCount = 0
-
-  // Pascal은 고정 1..MAX_SPAWNPOINTS를 순회(미사용 슬롯은 Active=False 기본값) —
-  // polymap.spawnpoints는 실제 개수+1만 할당하므로 length 가드 추가 (관찰 동등).
-  for (let i = 1; i <= MAX_SPAWNPOINTS && i < map.spawnpoints.length; i++) {
-    if (map.spawnpoints[i].active && map.spawnpoints[i].team === team) {
-      spawnsCount++
-      spawns[spawnsCount] = i
-    }
-  }
-
-  if (spawnsCount === 0) {
-    result = false
-    for (let i = 1; i <= MAX_SPAWNPOINTS && i < map.spawnpoints.length; i++) {
-      if (map.spawnpoints[i].active) {
-        spawnsCount++
-        spawns[spawnsCount] = i
-      }
-    }
-  }
-
-  if (spawnsCount > 0) {
-    const i = random(spawnsCount) + 1
-    start.x = map.spawnpoints[spawns[i]].x - 4 + random(8)
-    start.y = map.spawnpoints[spawns[i]].y - 4 + random(4)
-  }
-
-  return { result, start }
-}
+// M1에서 이 파일에 임시 거처였던 randomizeStart는 Things.pas 본체 포팅(M2 Task 5)과 함께
+// things.ts로 이동했다. 기존 `from './sprites'` import 경로 호환을 위해 재수출한다
+// (이 파일 내부의 Respawn 경로도 위 import를 그대로 사용).
+export { randomizeStart }
 
 /* ****************************************************************************
  *      loadSpriteObjects — Anims.pas LoadAnimObjects 끝부분 (341-360)        *
