@@ -292,6 +292,14 @@ export class PolyMap {
     return this.sectorsFlat[this.sectorIndex(x, y)]
   }
 
+  // Pascal exposes `Sectors: array[...] of TMapSector` as a public field, and Sprites.pas iterates
+  // `for j := 1 to High(Map.Sectors[rx, ry].Polys)` directly. This accessor is that public surface:
+  // returns the 1-based padded poly-index array for sector (x, y) (index 0 is dummy padding, iterate
+  // 1..length-1). Callers must bounds-check x/y (Sprites.pas guards with -SectorsNum < rx < SectorsNum).
+  sectorPolys(x: number, y: number): number[] {
+    return this.getSector(x, y).polys
+  }
+
   // PolyMap.pas:155-236 TPolyMap.LoadData (minus BotPath/Waypoints — see file header note)
   loadData(mapFile: TMapFile): void {
     this.mapID = mapFile.hash
