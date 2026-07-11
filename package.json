@@ -1,0 +1,21 @@
+{
+  "name": "soldat-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "assets": "node tools/build-assets.mjs"
+  },
+  "devDependencies": {
+    "jimp": "^1.6.1",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "pixi.js": "^8.19.0"
+  }
+}
