@@ -23,13 +23,23 @@ export function loadTestMap(gs: GameState, mapName = 'ctf_Ash.pms'): void {
   gs.map.loadData(mapFile)
 }
 
+// 폴리곤 0개 맵 — PolyMap.initialize()가 이미 빈 섹터그리드를 깔아 두므로, 섹터 파라미터만
+// 실측 맵 수준으로 세팅하면 된다 (충돌 판정·OOB 경계가 모두 이 두 값에서 파생된다).
+// bound = sectorsNum*sectorsDivision-10 = 1590 — 탄환 감쇠 테스트(이동거리 ~960px)에 충분.
+export function loadEmptyMap(gs: GameState, sectorsDivision = 64, sectorsNum = 25): void {
+  gs.map.initialize()
+  gs.map.sectorsDivision = sectorsDivision
+  gs.map.sectorsNum = sectorsNum
+}
+
 // GameState 풀 셋업: 애니메이션 44종 + SpriteParts/GostekSkeleton + BulletParts/SparkParts/
-// 씽 스켈레톤 프로토타입 + ctf_Ash 맵.
-export function setupTestGame(): GameState {
+// 씽 스켈레톤 프로토타입 + ctf_Ash 맵 (emptyMap 옵션 시 폴리곤 0개 맵).
+export function setupTestGame(opts: { emptyMap?: boolean } = {}): GameState {
   const gs = createGameState()
   gs.anims = loadAnimObjects(readAssetLines)
   loadSpriteObjects(gs, readAssetLines)
   loadThingObjects(gs, readAssetLines)
-  loadTestMap(gs)
+  if (opts.emptyMap) loadEmptyMap(gs)
+  else loadTestMap(gs)
   return gs
 }
