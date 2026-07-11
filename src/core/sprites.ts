@@ -47,6 +47,7 @@ import {
 import { trunc, random, pascalRound } from './pascal'
 import { pointLineDistance, distanceVec2 } from './calc'
 import { ParticleSystem, NUM_PARTICLES } from './parts'
+import { type TGun, emptyGun } from './weapons'
 import { TAnimation, MAX_FRAMES_INDEX, MAX_POS_INDEX } from './anims'
 import {
   PolyMap,
@@ -162,7 +163,9 @@ export const POS_PRONE = 4
 // (anims.ts와 동일하게 로컬 정의 — Constants.SCALE과 별개, anims.ts 헤더 노트 참조).
 const ANIMS_SCALE = 3
 
-// TODO(M2): 총기 식별 자리표시자 — control.ts 헤더 규약과 동일. Weapons.pas Guns[] 미포팅이라
+// TODO(M2 후속): 총기 식별 자리표시자 — control.ts 헤더 규약과 동일. weapons.ts(Weapons.pas
+// Guns[])는 Task 1에서 포팅되었지만, 이 파일의 `this.weapon`이 실제 guns[] 항목을 참조하도록
+// 배선하는 것은 Task 6/7(applyWeaponByNum 등) 몫이라 아직 여기서는 자리표시자를 쓴다.
 // `Weapon.Num = Guns[X].Num` 꼴 비교는 GUN_EQ(false), `<>` 꼴은 GUN_NEQ(true)로 대체하고
 // 원본 조건을 인접 주석으로 보존한다 ("특수총이 아닌 일반 총 소지" 기본값).
 const GUN_EQ = false as boolean // Weapon.Num  =  Guns[X].Num
@@ -245,64 +248,13 @@ function defaultBotData(): TBotData {
 }
 
 /* ****************************************************************************
- *          TGun stub (Weapons.pas:14-53 record — TODO(M2) weapons.ts)        *
+ *   TGun re-export (Weapons.pas:14-53 — 실제 정의는 weapons.ts, M2 Task 1)     *
  **************************************************************************** */
 
-// TODO(M2): Weapons.pas 포팅 시 weapons.ts로 이동. M1에서는 TSprite 필드 타입과
-// GetMoveacc(movementAcc)/Update(Task 11)가 컴파일되기 위한 구조만 제공 — 값은 모두 0
-// (Guns[] 배열/무기 대입 라인은 전부 TODO(M2) 스텁, 원본 라인은 주석으로 보존).
-export interface TGun {
-  ammo: number
-  ammoCount: number
-  num: number
-  movementAcc: number
-  bink: number
-  recoil: number
-  fireInterval: number
-  fireIntervalPrev: number
-  fireIntervalCount: number
-  fireIntervalReal: number
-  startUpTime: number
-  startUpTimeCount: number
-  reloadTime: number
-  reloadTimePrev: number
-  reloadTimeCount: number
-  reloadTimeReal: number
-  textureNum: number
-  clipTextureNum: number
-  clipReload: boolean
-  clipInTime: number
-  clipOutTime: number
-  name: string
-  iniName: string
-  speed: number
-  hitMultiply: number
-  bulletSpread: number
-  push: number
-  inheritedVelocity: number
-  modifierLegs: number
-  modifierChest: number
-  modifierHead: number
-  noCollision: number
-  fireMode: number
-  timeout: number
-  bulletStyle: number
-  fireStyle: number
-  bulletImageStyle: number
-}
-
-export function emptyGun(): TGun {
-  return {
-    ammo: 0, ammoCount: 0, num: 0, movementAcc: 0, bink: 0, recoil: 0,
-    fireInterval: 0, fireIntervalPrev: 0, fireIntervalCount: 0, fireIntervalReal: 0,
-    startUpTime: 0, startUpTimeCount: 0,
-    reloadTime: 0, reloadTimePrev: 0, reloadTimeCount: 0, reloadTimeReal: 0,
-    textureNum: 0, clipTextureNum: 0, clipReload: false, clipInTime: 0, clipOutTime: 0,
-    name: '', iniName: '', speed: 0, hitMultiply: 0, bulletSpread: 0, push: 0,
-    inheritedVelocity: 0, modifierLegs: 0, modifierChest: 0, modifierHead: 0,
-    noCollision: 0, fireMode: 0, timeout: 0, bulletStyle: 0, fireStyle: 0, bulletImageStyle: 0,
-  }
-}
+// M1 때 여기 있던 TGun 스텁(값은 전부 0)은 weapons.ts로 이관되었다. 기존 `from './sprites'`
+// import 경로 호환을 위해 재수출만 한다.
+export type { TGun }
+export { emptyGun }
 
 /* ****************************************************************************
  *        TPlayer — 최소 인터페이스 (Net.pas:252 TPlayer class 부분집합)      *
