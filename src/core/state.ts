@@ -10,6 +10,7 @@ import { PolyMap } from './polymap'
 import type { TAnimation } from './anims'
 import { type TVector2, vector2 } from './vector'
 import { TSprite, MAX_SPRITES, MAX_BULLETS, MAX_SPARKS, MAX_THINGS } from './sprites'
+import { TSpark } from './sparks'
 import {
   DEFAULT_CEASEFIRE_TIME,
   MAX_OLDPOS,
@@ -32,10 +33,6 @@ export interface TBullet {
 }
 // TODO(T5): delete — things.ts will export the real TThing (Things.pas:13-47 TThing record).
 export interface TThing {
-  active: boolean
-}
-// TODO(T3): delete — sparks.ts will export the real TSpark (Sparks.pas:8-21 TSpark record).
-export interface TSpark {
   active: boolean
 }
 // TODO(T11): delete — waypoints.ts will export the real TWaypoints (Waypoints.pas:31-34 object:
@@ -182,9 +179,16 @@ export interface GameState {
 
   // ── Game.pas:117 `Spark: array[1..MAX_SPARKS] of TSpark` — 원본은 `{$IFNDEF SERVER}`
   // (서버엔 스파크가 없다) 이지만, 공통 포팅 규약 12에 따라 이 포트는 core에 채택한다(스파크가
-  // 게임플레이에 역류하는 경로가 없음을 확인했으므로). TSpark는 Task 3(sparks.ts) 이관 전까지
-  // placeholder 타입 (`{active:false}` 사전할당), 1-based.
+  // 게임플레이에 역류하는 경로가 없음을 확인했으므로). TSpark는 sparks.ts(Task 3)가 이관한 실제
+  // 클래스, 1-based (gs.sprite와 동일 패턴 — createGameState()에서 `new TSpark(i)`로 사전생성).
   spark: TSpark[]
+
+  // ── Sparks.pas:26 `SparksCount: Integer` (유닛 전역) — "현재 활성 스파크 개수". 클라
+  // UpdateFrame.pas:76-82가 매 프레임 0으로 리셋 후 활성 스파크 update마다 +1 한다 — 그 배선은
+  // game.ts 틱 오더(Task 10) 몫이라 이 태스크(sparks.ts)는 필드만 선언하고 0으로 둔다.
+  // CreateSpark(Sparks.pas:61-66)의 풀 예산 게이트가 이 값을 읽는다 — r_maxsparks(별개의 렌더
+  // cvar, 상수 MAX_SPARKS로 고정 — sparks.ts 헤더 참조)와 혼동하지 말 것.
+  sparksCount: number
 
   // ── Game.pas:38 `SparkParts: ParticleSystem` (Gravity=GRAV/1.4, EDamping=0.998, TimeStep=1;
   // Anims.pas:382-385 → loadThingObjects()).
@@ -275,6 +279,7 @@ export function createGameState(): GameState {
     bulletParts: new ParticleSystem(),
     thing: [],
     spark: [],
+    sparksCount: 0,
     sparkParts: new ParticleSystem(),
     boxSkeleton: new ParticleSystem(),
     flagSkeleton: new ParticleSystem(),
@@ -299,12 +304,13 @@ export function createGameState(): GameState {
   // Pascal의 Sprite 배열은 항상 존재하는 레코드들(Active 플래그로 사용 여부 표시) — 여기서도
   // MAX_SPRITES개를 미리 만들어 둔다. [0]은 1-based 더미.
   gs.sprite = Array.from({ length: MAX_SPRITES + 1 }, (_, i) => new TSprite(gs, i))
-  // Bullet/Thing/Spark도 Pascal에서는 값 타입 배열이라 항상 전부 존재한다 — 지금은 TBullet/
-  // TThing/TSpark가 placeholder 타입이므로 `{active:false}` 인스턴스로 자리만 채워둔다.
-  // Task 4/5/3이 진짜 클래스(gs, num을 받는 생성자)로 교체한다 (gs.sprite와 동일 패턴).
+  // Bullet/Thing/Spark도 Pascal에서는 값 타입 배열이라 항상 전부 존재한다. TBullet/TThing은
+  // Task 4/5가 이관하기 전까지 여전히 placeholder 타입이라 `{active:false}` 인스턴스로 자리만
+  // 채워둔다. TSpark는 Task 3(sparks.ts)이 이미 이관한 실제 클래스라 gs.sprite와 동일하게
+  // `new TSpark(i)`로 사전생성한다.
   gs.bullet = Array.from({ length: MAX_BULLETS + 1 }, () => ({ active: false }))
   gs.thing = Array.from({ length: MAX_THINGS + 1 }, () => ({ active: false }))
-  gs.spark = Array.from({ length: MAX_SPARKS + 1 }, () => ({ active: false }))
+  gs.spark = Array.from({ length: MAX_SPARKS + 1 }, (_, i) => new TSpark(i))
   return gs
 }
 
