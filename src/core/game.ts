@@ -168,6 +168,12 @@ export function updateFrame(gs: GameState): void {
     // TODO(M3): TimerVote / MainConsole 스크롤 (523-531)
     // TODO(M2후속): if not sv_advancemode then WeaponSel 전부 1 리셋 (533-536) — advancemode 기본
     //   off라 정상 상태는 이미 전부 1 (state.ts weaponSel 초기값 주석).
+
+    // 클라 UpdateFrame.pas:202-203 — bink 누적치 감쇠. Fire(T7)가 채택한 hitSprayCounter
+    // (state.ts 필드 주석 참조)의 유일한 감쇠 경로. 원본에서 이 감쇠는 이 BulletTimeTimer<1
+    // 블록 안에 있어 불릿타임(sprites.ts:1394가 30으로 세팅) 동안엔 함께 멈춘다 — 블록 밖에
+    // 두면 불릿타임 중에도 감쇠해 셀프바인크가 원본보다 빨리 회복되므로 반드시 블록 내부에 유지.
+    if (gs.hitSprayCounter > 0) gs.hitSprayCounter--
   } // bullettime off
 
   // ⑫ INF 블루팀 틱 점수(542-555)·HTF 틱 점수(558-583) — TODO(M2후속). SortPlayers는 이제
@@ -220,11 +226,6 @@ export function updateFrame(gs: GameState): void {
   // POINTMATCH/HTF 노란 깃발 무결성 가드(656-678) — 해당 모드 미주력이라 TODO(M2후속) 스텁.
 
   // TODO(M3): 데모 자동 녹화 (680-684)
-
-  // 클라 UpdateFrame.pas:202-203 — bink 누적치 감쇠. 원본 서버 순서엔 없는 클라 전용 틱이지만,
-  // Fire(T7)가 채택한 hitSprayCounter(state.ts 필드 주석 참조)의 유일한 감쇠 경로라 함께 채택
-  // (없으면 bink가 무한 누적되어 발사 부정확도가 MAX_INACCURACY에 고정된다).
-  if (gs.hitSprayCounter > 0) gs.hitSprayCounter--
 }
 
 // 테스트/시뮬 편의: n틱 진행.
