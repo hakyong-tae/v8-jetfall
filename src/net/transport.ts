@@ -15,6 +15,41 @@ export interface Agent8Provider {
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
   Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('net timeout')), ms))])
 
+// ── 바이너리 페이로드 base64 래핑 (loopback 아님 — 실 agent8 relay 전용) ──────────────
+// 왜: agent8 relay는 payload를 JSON 직렬화해 나른다(nox-arena/kart-rush는 평문 객체만 보냄 —
+// 바이너리 전례 없음). 원시 ArrayBuffer/Uint8Array는 JSON.stringify에서 {}로 깨지므로,
+// send 시 base64 문자열로 감싸 JSON-안전한 {__b64:string} 래퍼로 보내고, 수신 시 되돌린다.
+// loopback은 참조 그대로 넘기므로 이 경로를 타지 않는다(무변경). 세션은 양쪽에서 동일하게
+// ArrayBuffer를 받으므로 차이를 알 수 없다 — 바이너리 효율 유지 + 실 relay 투명 통과.
+interface B64Wrapped { __b64: string }
+function isBinary(v: unknown): v is ArrayBuffer | ArrayBufferView {
+  return v instanceof ArrayBuffer || ArrayBuffer.isView(v)
+}
+function isWrapped(v: unknown): v is B64Wrapped {
+  return typeof v === 'object' && v !== null && typeof (v as B64Wrapped).__b64 === 'string'
+}
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
+}
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out.buffer
+}
+function wrapForRelay(payload: unknown): unknown {
+  if (!isBinary(payload)) return payload
+  const bytes = payload instanceof ArrayBuffer
+    ? new Uint8Array(payload)
+    : new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
+  return { __b64: bytesToBase64(bytes) } satisfies B64Wrapped
+}
+function unwrapFromRelay(payload: unknown): unknown {
+  return isWrapped(payload) ? base64ToArrayBuffer(payload.__b64) : payload
+}
+
 export function makeAgent8Transport(provider: Agent8Provider): Transport {
   const timeoutMs = provider.timeoutMs ?? 4000
   const configured = provider.configured ?? true
@@ -49,7 +84,7 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       roomKey = key
       server.onRoomMessage(key, 'relay', (m) => {
         const { event, payload, from } = m as { event: string; payload: unknown; from: string }
-        msgHandler(event, payload, from)
+        msgHandler(event, unwrapFromRelay(payload), from) // {__b64}면 ArrayBuffer로 복원
       })
       server.onRoomMessage(key, 'state', (m) => stateHandler(m as RoomState))
     },
@@ -68,7 +103,7 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
     },
     send(event: string, payload: unknown) {
       if (t.status !== 'online' || !server || !roomKey) return
-      server.remoteFunction('relay', [event, payload], { needResponse: false })
+      server.remoteFunction('relay', [event, wrapForRelay(payload)], { needResponse: false }) // 바이너리→{__b64}
     },
     onMessage(h: MessageHandler) { msgHandler = h },
     onRoomState(h: (s: RoomState) => void) { stateHandler = h },

@@ -41,3 +41,66 @@ describe('makeAgent8Transport', () => {
     expect(await t.connect()).toBe('offline')
   })
 })
+
+// 실 agent8 relay는 payload를 JSON 직렬화한다(nox-arena/kart-rush는 평문 객체만 보냄).
+// 이 버스 모의는 그 직렬화를 JSON.parse(JSON.stringify(...))로 재현한다 — 원시 ArrayBuffer면
+// {}로 깨지므로, transport의 base64 래핑이 없으면 라운드트립이 실패해야 한다.
+function relayBus() {
+  const subs: Array<(m: any) => void> = []
+  function makeInstance(account: string) {
+    return {
+      account,
+      connect: vi.fn(async () => {}),
+      remoteFunction: vi.fn(async (name: string, args: any[]) => {
+        if (name === 'relay') {
+          const [event, payload] = args
+          const serialized = JSON.parse(JSON.stringify({ event, payload, from: account }))
+          for (const cb of subs) cb(serialized)
+        }
+        return null
+      }),
+      onRoomMessage: vi.fn((_room: string, event: string, cb: (m: any) => void) => {
+        if (event === 'relay') subs.push(cb)
+      }),
+    }
+  }
+  return { makeInstance }
+}
+
+describe('makeAgent8Transport binary relay (base64 wrap — survives JSON serialization)', () => {
+  it('a binary payload sent comes back as an equal Uint8Array on another subscriber', async () => {
+    const bus = relayBus()
+    const sender = makeAgent8Transport({ getInstance: () => bus.makeInstance('alice') as any, configured: true })
+    const receiver = makeAgent8Transport({ getInstance: () => bus.makeInstance('bob') as any, configured: true })
+    await sender.connect(); await receiver.connect()
+    await sender.joinRoom('r'); await receiver.joinRoom('r')
+
+    const got: { event: string; payload: unknown; from: string }[] = []
+    receiver.onMessage((event, payload, from) => got.push({ event, payload, from }))
+
+    const bytes = new Uint8Array([1, 2, 3, 250, 0, 255, 128])
+    sender.send('input', bytes.buffer)
+    await Promise.resolve(); await Promise.resolve()
+
+    expect(got).toHaveLength(1)
+    expect(got[0].event).toBe('input')
+    expect(got[0].from).toBe('alice')
+    expect(got[0].payload instanceof ArrayBuffer).toBe(true)
+    expect(new Uint8Array(got[0].payload as ArrayBuffer)).toEqual(bytes)
+  })
+
+  it('plain object payloads (e.g. ASSIGN) pass through unchanged (no wrapper)', async () => {
+    const bus = relayBus()
+    const sender = makeAgent8Transport({ getInstance: () => bus.makeInstance('host') as any, configured: true })
+    const receiver = makeAgent8Transport({ getInstance: () => bus.makeInstance('bob') as any, configured: true })
+    await sender.connect(); await receiver.connect()
+    await sender.joinRoom('r'); await receiver.joinRoom('r')
+
+    const got: unknown[] = []
+    receiver.onMessage((_event, payload) => got.push(payload))
+    sender.send('assign', { account: 'bob', num: 3 })
+    await Promise.resolve(); await Promise.resolve()
+
+    expect(got).toEqual([{ account: 'bob', num: 3 }])
+  })
+})
