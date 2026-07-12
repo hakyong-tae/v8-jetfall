@@ -14,6 +14,7 @@ import type { GameState } from '../core/state'
 import type { Manifest } from './assets'
 import { loadTexture } from './assets'
 import { weaponNumToIndex, guns, AK74, EAGLE, FLAMER } from '../core/weapons'
+import { MAX_SPRITES } from '../core/sprites'
 
 // 색상 슬롯 (GostekGraphics.pas:23-29). TPlayer에 색상 필드가 아직 없어(M1 미포팅)
 // 기본 팔레트를 하드코딩 — TODO(M2): Player.ShirtColor/PantsColor/SkinColor 연결.
@@ -240,5 +241,32 @@ export class GostekRenderer {
     ws.rotation = Math.atan2(y2 - y1, x2 - x1)
     ws.scale.set(GOSTEK_TEX_SCALE, GOSTEK_TEX_SCALE)
     ws.alpha = soldier.alpha / 255
+  }
+}
+
+// 봇전(다수 스프라이트)용 gostek 풀 — 스프라이트 슬롯 1..MAX_SPRITES마다 GostekRenderer 하나를
+// 지연 생성(첫 active 시)하고, 매 프레임 전부 update한다. 각 GostekRenderer.update가 자체적으로
+// active=false면 container.visible=false 처리하므로 죽은/미접속 슬롯은 자동으로 숨겨진다.
+export class GostekPool {
+  readonly container = new Container()
+  private renderers: (GostekRenderer | undefined)[] = []
+  private readonly textures: Map<string, Texture>
+
+  constructor(textures: Map<string, Texture>) {
+    this.textures = textures
+  }
+
+  update(gs: GameState): void {
+    for (let i = 1; i <= MAX_SPRITES; i++) {
+      let r = this.renderers[i]
+      const active = gs.sprite[i]?.active
+      if (!r) {
+        if (!active) continue // 아직 등장 안 한 슬롯은 렌더러 생성 지연
+        r = new GostekRenderer(this.textures)
+        this.container.addChild(r.container)
+        this.renderers[i] = r
+      }
+      r.update(gs, i)
+    }
   }
 }

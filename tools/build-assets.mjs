@@ -168,7 +168,23 @@ async function convertDir(srcDir, outDir, manifest, keyPrefix) {
   }
 }
 
-const manifest = { sprites: {}, maps: {}, anims: {}, objects: {} }
+// 사운드(.wav) 복사 — 변환 없이 원본 그대로. manifest.sfx[key] = 상대경로.
+// 키 = 확장자 뺀 상대경로(소문자) — Sound.pas SAMPLE_FILES와 동일 규약(radio/ 하위폴더 유지).
+async function copySfx(srcDir, outDir, sfxManifest) {
+  await mkdir(outDir, { recursive: true })
+  const entries = await readdir(srcDir, { recursive: true })
+  for (const f of entries) {
+    if (extname(f).toLowerCase() !== '.wav') continue
+    const rel = f.split('\\').join('/')
+    const outPath = join(outDir, rel)
+    await mkdir(dirname(outPath), { recursive: true })
+    await cp(join(srcDir, f), outPath)
+    const key = rel.replace(/\.wav$/i, '').toLowerCase()
+    sfxManifest[key] = `sfx/${rel}`
+  }
+}
+
+const manifest = { sprites: {}, maps: {}, anims: {}, objects: {}, sfx: {} }
 
 await convertDir(join(BASE, 'shared/gostek-gfx'), join(OUT, 'gostek'), manifest.sprites, 'gostek')
 await convertDir(join(BASE, 'shared/textures'), join(OUT, 'textures'), manifest.sprites, 'textures')
@@ -205,6 +221,9 @@ for (const f of await readdir(join(BASE, 'shared/objects'))) {
 await convertDir(join(BASE, 'shared/weapons-gfx'), join(OUT, 'weapons'), manifest.sprites, 'weapons')
 await convertDir(join(BASE, 'shared/interface-gfx'), join(OUT, 'interface'), manifest.sprites, 'interface')
 
+// 사운드 효과 (.wav) — 변환 없이 복사, manifest.sfx에 등록 (T13 web/sound.ts가 로드)
+await copySfx(join(BASE, 'shared/sfx'), join(OUT, 'sfx'), manifest.sfx)
+
 // 무기 모드 (.ini → weapons.json)
 const weapons = {
   normal: await buildWeaponsMod(join(BASE, 'server/configs/weapons.ini')),
@@ -229,6 +248,7 @@ console.log(
   Object.keys(manifest.maps).length, 'maps,',
   Object.keys(manifest.anims).length, 'anims,',
   Object.keys(manifest.objects).length, 'objects,',
+  Object.keys(manifest.sfx).length, 'sfx,',
   Object.keys(weapons.normal.guns).length, 'normal guns,',
   Object.keys(weapons.realistic.guns).length, 'realistic guns,',
   Object.keys(bots).length, 'bots,',
