@@ -5,6 +5,7 @@ import { Application, Container, Text } from 'pixi.js'
 import { createGameState, loadThingObjects } from '../core/state'
 import { loadAnimObjects } from '../core/anims'
 import { loadSpriteObjects, createSprite, createTPlayer, randomizeStart } from '../core/sprites'
+import { createWeapons, loadWeaponsConfig, guns, AK74, type WeaponsIniConfig } from '../core/weapons'
 import { loadMapFile } from '../core/mapfile'
 import { updateFrame } from '../core/game'
 import { TEAM_ALPHA } from '../core/constants'
@@ -35,6 +36,11 @@ async function boot(): Promise<void> {
   loadSpriteObjects(gs, read)
   loadThingObjects(gs, read)
 
+  // ── 무기 데이터 (이게 없으면 총이 전부 0값 → 재장전 루프에 갇혀 웅크린 포즈가 됨)
+  createWeapons(false)
+  const weaponsJson = (await (await fetch('/assets/weapons.json')).json()) as { normal: WeaponsIniConfig }
+  loadWeaponsConfig(weaponsJson.normal)
+
   const mapFile = loadMapFile(await fetchBinary(manifest.maps[MAP_NAME]))
   gs.map.loadData(mapFile)
 
@@ -45,6 +51,10 @@ async function boot(): Promise<void> {
   const r = randomizeStart(gs, TEAM_ALPHA)
   const me = createSprite(gs, r.start, vector2(0, 0), 1, 255, player, true)
   if (me < 0) throw new Error('createSprite failed')
+  // AK-74 + 보조권총 로드아웃 (respawn이 selWeapon/secWep 규칙대로 지급 — Respawn 3580-3612)
+  gs.sprite[me].selWeapon = guns[AK74].num
+  gs.sprite[me].player!.secWep = 0
+  gs.sprite[me].respawn()
 
   // ── PIXI (커스텀 GlProgram 셰이더 사용 — WebGL 강제)
   const app = new Application()
