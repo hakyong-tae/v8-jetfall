@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022", "module": "ESNext", "moduleResolution": "bundler",
     "strict": true, "noUncheckedIndexedAccess": false,
-    "types": ["vite/client"], "skipLibCheck": true
+    "types": ["vite/client", "node", "ws"], "skipLibCheck": true
   },
-  "include": ["src", "tools"]
+  "include": ["src", "tools", "server"]
 }

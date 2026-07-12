@@ -1,0 +1,220 @@
+// src/net/host-session.ts — 호스트권위 이동 시뮬 루프. Transport 인터페이스에만 의존
+// (agent8 구체 API 아님) → loopback으로 완전 테스트 가능. 코어(src/core/*) 무수정,
+// 이미 로드된 GameState(맵/애니/무기 세팅 완료)를 받아 그 위에서만 동작한다.
+// Node 헤드리스(server/host.ts, D단계)와 브라우저-호스트(main.ts, 이번 단계) 양쪽에서 재사용.
+import type { GameState } from '../core/state'
+import type { Transport } from './types'
+import {
+  MSG, encodeSnapshot, decodeInput, encodeBullet, type InputMsg, type SnapshotSprite,
+  type FlagState, type KillMsg,
+} from './protocol'
+import { createSprite, createTPlayer, HUMAN, MAX_SPRITES, MAX_BULLETS } from '../core/sprites'
+import { randomizeStart } from '../core/things'
+import { guns, AK74 } from '../core/weapons'
+import { updateFrame } from '../core/game'
+import { vector2 } from '../core/vector'
+import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG } from '../core/constants'
+
+export interface HostSessionPlayer { account: string; team: number }
+
+// 60Hz 틱 중 2틱마다 브로드캐스트 ⇒ 30Hz (스펙 §4.2 "~20-30Hz" 범위 내).
+const SNAPSHOT_EVERY_N_TICKS = 2
+
+export class HostSession {
+  private slotOf = new Map<string, number>() // account → 스프라이트 num
+  private lastInput = new Map<string, InputMsg>() // account → 최신 수신 입력(누적 아님, 최신값만)
+  private lastAppliedSeq = new Map<number, number>() // sprite num → 마지막 적용 seq
+  private tickCount = 0
+
+  // ── C단계 신규 상태 ──
+  private prevActiveBullets = new Set<number>()
+  private bulletSeq = 0
+  private prevKills = new Map<number, number>()   // sprite num → 직전 틱 kills
+  private prevDeadMeat = new Map<number, boolean>() // sprite num → 직전 틱 deadMeat
+
+  constructor(private transport: Transport, public readonly gs: GameState) {
+    transport.onMessage((event, _payload, from) => {
+      if (event !== MSG.INPUT) return
+      this.lastInput.set(from, decodeInput(_payload as ArrayBuffer))
+    })
+  }
+
+  // 매치 시작 시 1회 — 룸의 전 플레이어에게 스프라이트 배정(슬롯 번호는 createSprite가 빈 슬롯
+  // 중 하나를 고르므로 호출 순서가 배정 순서). addBotPlayer 패턴(randomizeStart→createSprite→
+  // 무기지급→respawn) 재사용, controlMethod만 BOT 대신 HUMAN.
+  spawnPlayers(players: HostSessionPlayer[]): void {
+    for (const p of players) {
+      const tPlayer = createTPlayer()
+      tPlayer.team = p.team
+      tPlayer.controlMethod = HUMAN
+      // 이름이 비면 코어 respawn()이 조기 반환(sprites.ts:3506 `{$IFNDEF SERVER}` 가드)해
+      //   사망 후 영구히 리스폰 못 함 — 계정명을 부여해 리스폰 경로를 활성화.
+      tPlayer.name = p.account
+      const r = randomizeStart(this.gs, p.team)
+      const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
+      if (num < 0) continue // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
+      this.gs.sprite[num].selWeapon = guns[AK74].num
+      this.gs.sprite[num].player!.secWep = 0
+      this.gs.sprite[num].respawn()
+      this.slotOf.set(p.account, num)
+      // C단계: 킬/사망 diff 기준선을 스폰 시점에 시딩 — 첫 틱 이전(스크립트 데미지 등)에
+      //   발생한 변화도 첫 tick()의 diff가 올바르게 잡도록 한다(lazy-init 사각지대 제거).
+      this.prevKills.set(num, this.gs.sprite[num].player!.kills)
+      this.prevDeadMeat.set(num, this.gs.sprite[num].deadMeat)
+      this.transport.send(MSG.ASSIGN, { account: p.account, num })
+    }
+    this.gs.sortPlayers?.()
+  }
+
+  spriteNumOf(account: string): number | undefined {
+    return this.slotOf.get(account)
+  }
+
+  // 한 틱 전진: 최신 입력 적용 → updateFrame → (2틱마다) 스냅샷 브로드캐스트.
+  // 순수 스텝 함수 — 헤드리스 테스트는 이걸 직접 반복 호출(결정론적), 실 구동(Node
+  // setInterval/브라우저 rAF)은 startLoop()가 감싼다.
+  //
+  // 주의(브라우저-호스트 모드): 호스트 자신의 계정은 스스로에게 네트워크 메시지를 보내지 않으므로
+  // lastInput에 절대 나타나지 않는다 — 즉 호스트 자신의 스프라이트 control은 이 메서드가 절대
+  // 건드리지 않는다. main.ts의 렌더 루프가 tick() 호출 "직전"에 로컬 입력을 그 스프라이트의
+  // control에 직접 써넣으면 된다(별도 분기 불필요, §웹 배선 참조).
+  tick(): void {
+    for (const [account, input] of this.lastInput) {
+      const num = this.slotOf.get(account)
+      if (num === undefined) continue
+      const c = this.gs.sprite[num].control
+      c.left = input.left; c.right = input.right; c.up = input.up; c.down = input.down
+      c.fire = input.fire; c.jetpack = input.jetpack; c.throwNade = input.throwNade
+      c.changeWeapon = input.changeWeapon; c.throwWeapon = input.throwWeapon
+      c.reload = input.reload; c.prone = input.prone; c.flagThrow = input.flagThrow
+      c.mouseAimX = input.mouseAimX; c.mouseAimY = input.mouseAimY
+      this.lastAppliedSeq.set(num, input.seq)
+    }
+
+    updateFrame(this.gs) // ← 탄환 생성·데미지·사망·리스폰·(CTF)깃발자동생성/캡처가 전부 이 안에서 일어남
+
+    this.diffAndBroadcastBullets()  // 설계 결정 1
+    this.diffAndBroadcastKills()    // 설계 결정 3
+
+    this.tickCount++
+    if (this.tickCount % SNAPSHOT_EVERY_N_TICKS === 0) this.broadcastSnapshot()
+  }
+
+  // ── 설계 결정 1: 탄환 활성슬롯 diff ──────────────────────────────────────
+  private diffAndBroadcastBullets(): void {
+    const activeNow = new Set<number>()
+    for (let i = 1; i <= MAX_BULLETS; i++) {
+      if (this.gs.bullet[i].active) activeNow.add(i)
+    }
+    const humanSprites = new Set(this.slotOf.values())
+    for (const slot of activeNow) {
+      if (this.prevActiveBullets.has(slot)) continue // 기존 탄환 — 이번 틱 신규 아님
+      const b = this.gs.bullet[slot]
+      if (!humanSprites.has(b.owner)) continue // 봇 등 미추적 소유자는 스코프 밖(열린 질문 참조)
+      const vel = this.gs.bulletParts.velocity[slot]
+      this.transport.send(MSG.BULLET, encodeBullet({
+        seq: this.bulletSeq++, owner: b.owner, weaponNum: b.ownerWeapon, style: b.style,
+        hitMultiply: b.hitMultiply, seed: b.seed,
+        posX: b.initial.x, posY: b.initial.y, velX: vel.x, velY: vel.y,
+      }))
+    }
+    this.prevActiveBullets = activeNow
+  }
+
+  // ── 설계 결정 3: 킬 이벤트(킬피드 전용) diff ──────────────────────────────
+  private diffAndBroadcastKills(): void {
+    const killers: number[] = []
+    for (let i = 1; i <= MAX_SPRITES; i++) {
+      const spr = this.gs.sprite[i]
+      if (!spr.active || !spr.player) continue
+      const prev = this.prevKills.get(i) ?? spr.player.kills
+      if (spr.player.kills > prev) killers.push(i)
+      this.prevKills.set(i, spr.player.kills)
+    }
+    for (const num of this.slotOf.values()) {
+      const spr = this.gs.sprite[num]
+      if (!spr.active) continue
+      const wasDead = this.prevDeadMeat.get(num) ?? false
+      if (!wasDead && spr.deadMeat) {
+        const killerNum = killers.find((k) => k !== num) ?? 0
+        const weaponNum = killerNum > 0 ? this.gs.sprite[killerNum].weapon.num : 0
+        const msg: KillMsg = { killer: killerNum, victim: num, weaponNum }
+        this.transport.send(MSG.KILL, msg)
+      }
+      this.prevDeadMeat.set(num, spr.deadMeat)
+    }
+  }
+
+  private broadcastSnapshot(): void {
+    const sprites: SnapshotSprite[] = []
+    for (const num of this.slotOf.values()) {
+      const spr = this.gs.sprite[num]
+      if (!spr.active) continue
+      sprites.push({
+        num,
+        team: spr.player!.team,
+        direction: spr.direction,
+        deadMeat: spr.deadMeat,
+        health: spr.health,
+        jetsCount: spr.jetsCount,
+        legsAnimId: spr.legsAnimation.id,
+        legsFrame: spr.legsAnimation.currFrame,
+        bodyAnimId: spr.bodyAnimation.id,
+        bodyFrame: spr.bodyAnimation.currFrame,
+        lastInputSeq: this.lastAppliedSeq.get(num) ?? 0,
+        posX: this.gs.spriteParts.pos[num].x,
+        posY: this.gs.spriteParts.pos[num].y,
+        velX: this.gs.spriteParts.velocity[num].x,
+        velY: this.gs.spriteParts.velocity[num].y,
+        kills: spr.player!.kills, deaths: spr.player!.deaths, // ← C단계 추가
+        control: {
+          left: spr.control.left, right: spr.control.right, up: spr.control.up, down: spr.control.down,
+          fire: spr.control.fire, jetpack: spr.control.jetpack, throwNade: spr.control.throwNade,
+          changeWeapon: spr.control.changeWeapon, throwWeapon: spr.control.throwWeapon,
+          reload: spr.control.reload, prone: spr.control.prone, flagThrow: spr.control.flagThrow,
+          mouseAimX: spr.control.mouseAimX, mouseAimY: spr.control.mouseAimY,
+        },
+      })
+    }
+
+    // ── 설계 결정 4: CTF 깃발 상태(스타일별 gs.teamFlag 조회 — 호스트가 이미 매 틱 추적 중) ──
+    let flags: FlagState[] | undefined
+    if (this.gs.svGamemode === GAMESTYLE_CTF) {
+      flags = [OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG].map((style) => {
+        const slot = this.gs.teamFlag[style]
+        if (!slot || !this.gs.thing[slot]?.active) {
+          return { style, thingNum: 0, holdingSprite: 0, posX: 0, posY: 0 }
+        }
+        const t = this.gs.thing[slot]
+        return { style, thingNum: slot, holdingSprite: t.holdingSprite, posX: t.skeleton.pos[1].x, posY: t.skeleton.pos[1].y }
+      })
+    }
+
+    this.transport.send(MSG.SNAPSHOT, encodeSnapshot({
+      tick: this.gs.ticks,
+      teamScore1: this.gs.teamScore[1] ?? 0,
+      teamScore2: this.gs.teamScore[2] ?? 0,
+      sprites, flags,
+    }))
+  }
+
+  // 실 구동용 — 테스트는 tick()을 직접 반복 호출하므로 미사용. 반환값은 정지 함수.
+  startLoop(intervalMs = 1000 / 60): () => void {
+    const h = setInterval(() => this.tick(), intervalMs)
+    return () => clearInterval(h)
+  }
+
+  // M3-E: 이미 돌고 있던 클라의 gs(전원 로컬 미러링된 활성 스프라이트)를 승계 — spawnPlayers()처럼
+  // randomizeStart+createSprite로 새로 스폰하지 않는다(순간이동/리스폰 없이 이어짐, §설계결정2).
+  static fromPromotedClient(transport: Transport, gs: GameState, knownSlots: Map<string, number>): HostSession {
+    const host = new HostSession(transport, gs)
+    for (const [account, num] of knownSlots) {
+      if (!gs.sprite[num]?.active) continue
+      host.slotOf.set(account, num)
+      host.prevKills.set(num, gs.sprite[num].player?.kills ?? 0)
+      host.prevDeadMeat.set(num, gs.sprite[num].deadMeat)
+    }
+    for (let i = 1; i <= MAX_BULLETS; i++) if (gs.bullet[i].active) host.prevActiveBullets.add(i) // 기존 탄환 오탐 방지
+    return host
+  }
+}
