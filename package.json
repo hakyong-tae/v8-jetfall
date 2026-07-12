@@ -7,10 +7,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "assets": "node tools/build-assets.mjs"
+    "assets": "node tools/build-assets.mjs",
+    "build:host": "esbuild server/host.ts --bundle --platform=node --format=esm --packages=external --outfile=dist-server/host.mjs",
+    "host": "npm run build:host && node dist-server/host.mjs"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
     "jimp": "^1.6.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
