@@ -141,10 +141,12 @@ const FLAG_COLORS: Record<number, { base: number; top: number; low: number }> = 
 //   에셋 미보유로 보류. ILUM 글로우(:1086-1092)도 보류.
 class FlagCloth {
   readonly mesh: Mesh<Geometry, Shader>
+  readonly style: number // 버텍스 컬러가 style로 구워지므로 슬롯 재사용 시 대조용
   private readonly positions = new Float32Array(6 * 2)
   private readonly posBuffer: Buffer
 
   constructor(texture: Texture, style: number) {
+    this.style = style
     const c = FLAG_COLORS[style] ?? { base: 0xffffff, top: 0xffffff, low: 0xffffff }
     // 버텍스 순서 [v0,v1,v2, v2,v3,v0] → 컬러 [base,top,base, base,low,base]
     const order = [c.base, c.top, c.base, c.base, c.low, c.base]
@@ -234,10 +236,11 @@ export class BulletsRenderer {
   }
 
   // head에서 tail 방향으로 로컬 +x를 스트레치하는 트레일/탄체 스프라이트 배치.
-  // 원본은 Roto := -Angle2Points(head, tail)을 GfxDrawSprite에 전달 (Bullets.pas:784 등,
-  // 피벗 rx=ry=0 = 좌상단). -부호는 수학좌표 관례의 잔재로 y-down 파이프라인에서 대각 사격 시
-  // y가 거울되는 원본 quirk — 웹 포팅은 gostek.ts와 동일하게 화면좌표 atan2로
-  // '탄도 뒤로 뻗는' 원본 의도를 따른다. 스케일은 원본 수식 × BULLET_TEX_SCALE(고해상도 에셋 보정).
+  // 원본은 Roto := -Angle2Points(head, tail)을 GfxDrawSprite에 전달하는데(Bullets.pas:784 등,
+  // 피벗 rx=ry=0 = 좌상단), GfxDrawSprite가 내부에서 각도를 다시 부호반전한다
+  // (GfxSpriteVertices(..., -r, ...), Gfx.pas:1483/1499). 이중 부정으로 화면상 실제 회전은
+  // +Angle2Points = atan2(tail-head) — 아래 atan2가 원본과 정확히 일치한다(편차 아님).
+  // 스케일은 원본 수식 × BULLET_TEX_SCALE(고해상도 에셋 보정).
   private setStretch(
     s: Sprite,
     texKey: string,
@@ -350,12 +353,13 @@ export class BulletsRenderer {
 
         case BULLET_STYLE_M79: {
           // Bullets.pas:897-929. 탄체는 TimeOutReal*6도(度)로 자체 스핀(:907-908).
+          // GfxDrawSprite가 각도를 내부 부호반전(Gfx.pas:1483)하므로 화면상 스핀은 -6°/tick.
           if (b.timeOut < BULLET_TIMEOUT - 2) {
             s.texture = this.tex('weapons/m79-bullet')
             s.visible = true
             s.anchor.set(0, 0)
             s.position.set(pos.x, pos.y + 1) // :900-901
-            s.rotation = (b.timeOut * 6 * Math.PI) / 180 // degtorad(TimeOutReal*6)
+            s.rotation = (-b.timeOut * 6 * Math.PI) / 180 // degtorad(TimeOutReal*6) → 화면 -방향
             s.scale.set(BULLET_TEX_SCALE, BULLET_TEX_SCALE)
             s.tint = 0xffffff
             s.alpha = 252 / 255
@@ -434,6 +438,14 @@ export class BulletsRenderer {
         // 깃발 = 천 메시 (Things.pas PolygonsRender:1206-1304). 스프라이트는 숨김.
         s.visible = false
         let c = cloth
+        // 컬러가 생성 시 style로 구워지므로, 슬롯이 다른 팀 깃발로 재사용되면 재생성
+        // (라운드 리셋/깃발 무결성 가드가 createThing으로 슬롯을 재배정할 수 있음).
+        if (c && c.style !== t.style) {
+          this.container.removeChild(c.mesh)
+          c.mesh.destroy()
+          c = undefined
+          this.flagCloths[i] = undefined
+        }
         if (!c) {
           c = new FlagCloth(this.tex(key), t.style)
           this.container.addChild(c.mesh)
