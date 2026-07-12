@@ -71,7 +71,8 @@ export function buildPolyBuffers(mapFile: TMapFile, which: 'back' | 'front' | 'a
 
 // 버텍스 컬러 지원 셰이더 (PIXI v8 Mesh 커스텀 GlProgram — WebGL 전용, main.ts에서
 // preference:'webgl' 강제). uProjection/uWorldTransform/uTransform은 파이프라인 제공 유니폼.
-const VERTEX_SRC = `
+// export: bulletsrender.ts 깃발 천 메시(FlagCloth)도 동일 per-vertex color 셰이더 사용.
+export const VERTEX_SRC = `
   in vec2 aPosition;
   in vec2 aUV;
   in vec4 aColor;
@@ -91,7 +92,7 @@ const VERTEX_SRC = `
   }
 `
 
-const FRAGMENT_SRC = `
+export const FRAGMENT_SRC = `
   in vec2 vUV;
   in vec4 vColor;
   uniform sampler2D uTexture;
