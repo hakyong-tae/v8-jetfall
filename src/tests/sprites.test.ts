@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { setupTestGame } from './helpers'
 import type { GameState } from '../core/state'
-import { vector2, cloneVec2 } from '../core/vector'
+import { vector2, cloneVec2, vec2Length } from '../core/vector'
 import { distanceVec2 } from '../core/calc'
 import { NUM_PARTICLES } from '../core/parts'
 import { POLY_TYPE_NORMAL, MAX_SPAWNPOINTS } from '../core/polymap'
 import {
   MAX_SPRITES,
+  MAX_BULLETS,
   NORMAL_DEATH,
+  TSprite,
   createSprite,
   createTPlayer,
   teamCollides,
@@ -24,7 +26,19 @@ import {
   OBJECT_AK74,
   OBJECT_PARACHUTE,
 } from '../core/constants'
-import { createWeapons, guns, AK74, COLT, EAGLE, NOWEAPON_NUM } from '../core/weapons'
+import {
+  createWeapons,
+  calculateBink,
+  guns,
+  AK74,
+  COLT,
+  EAGLE,
+  M79,
+  SPAS12,
+  FRAGGRENADE,
+  NOWEAPON_NUM,
+  BULLET_STYLE_FRAGNADE,
+} from '../core/weapons'
 import { createThing } from '../core/things'
 
 // 스폰포인트 하나 골라 스프라이트를 만들어주는 공통 셋업
@@ -382,6 +396,153 @@ describe('combat 1부 — healthHit/die/kill/dropWeapon/applyWeaponByNum (Task 6
     expect(spr.deadMeat).toBe(false)
     // DropWeapon 경유 — 이전 무기가 Thing으로 필드에 떨어져 있다
     expect(gs.thing.some((t) => t.active && t.style === OBJECT_AK74)).toBe(true)
+  })
+})
+
+describe('combat 2부 — fire/throwGrenade/throwFlag/respawn 무기 (Task 7)', () => {
+  let gs: GameState
+  beforeEach(() => {
+    createWeapons(false)
+    gs = setupTestGame()
+  })
+
+  // 전투 셋업: 스폰 + 발사 게이트(ceaseFire) 해제 + 오른쪽 조준
+  function combatSpawn(team = TEAM_NONE): TSprite {
+    const i = spawnAt(gs, team)
+    const spr = gs.sprite[i]
+    spr.ceaseFireCounter = -1
+    spr.control.mouseAimX = Math.trunc(gs.spriteParts.pos[i].x) + 300
+    spr.control.mouseAimY = Math.trunc(gs.spriteParts.pos[i].y)
+    return spr
+  }
+
+  function activeBullets(): number[] {
+    const list: number[] = []
+    for (let i = 1; i <= MAX_BULLETS; i++) if (gs.bullet[i].active) list.push(i)
+    return list
+  }
+
+  it('fire: control.fire 세팅 후 update → 탄환 생성, ammoCount 감소, fireIntervalCount 리셋 (Fire 3974-4597)', () => {
+    const spr = combatSpawn()
+    spr.applyWeaponByNum(guns[AK74].num, 1)
+    spr.weapon.fireIntervalCount = 0
+    const ammoBefore = spr.weapon.ammoCount
+    spr.control.fire = true
+
+    spr.update() // → controlSprite FIRE 블록 → fire()
+
+    const bullets = activeBullets()
+    expect(bullets.length).toBe(1)
+    expect(spr.weapon.ammoCount).toBe(ammoBefore - 1)
+    // Fire가 FireIntervalCount := FireInterval로 리셋(4233-4234)한 뒤, 같은 update 틱의
+    // WEAPON HANDLING 블록(Sprites.pas:855-869)이 1 감소시킨다 (ControlSprite가 먼저 도는
+    // 원본 순서 그대로)
+    expect(spr.weapon.fireIntervalCount).toBe(spr.weapon.fireInterval - 1)
+    expect(spr.fired).toBe(spr.weapon.fireStyle)
+
+    const bn = bullets[0]
+    expect(gs.bullet[bn].ownerWeapon).toBe(guns[AK74].num)
+    expect(gs.bullet[bn].owner).toBe(spr.num)
+    // 탄속: |v| = Weapon.Speed (spread는 방향에만 작용 — 정규화 후 스케일) + 관성(정지=0)
+    const v = gs.bulletParts.velocity[bn]
+    expect(vec2Length(v)).toBeCloseTo(guns[AK74].speed, 5)
+    expect(v.x).toBeGreaterThan(0) // 오른쪽 조준
+  })
+
+  it('fire: bink — 인간 스프라이트 발사 후 hitSprayCounter에 자기 bink 누적 (4529-4546)', () => {
+    const spr = combatSpawn()
+    spr.applyWeaponByNum(guns[AK74].num, 1)
+    spr.weapon.fireIntervalCount = 0
+    // AK74 normal ini: Bink < 0 (음수 = 발사 시 자기 bink 누적)
+    expect(guns[AK74].bink).toBeLessThan(0)
+    gs.hitSprayCounter = 0
+    spr.fire()
+    // 서서 발사 → CalculateBink(HitSprayCounter, -Weapon.Bink)
+    expect(gs.hitSprayCounter).toBe(calculateBink(0, -guns[AK74].bink))
+  })
+
+  it('fire: SPAS12(BulletStyle=SHOTGUN)는 1회 발사에 산탄 다수 생성', () => {
+    const spr = combatSpawn()
+    spr.applyWeaponByNum(guns[SPAS12].num, 1)
+    spr.weapon.fireIntervalCount = 0
+    const ammoBefore = spr.weapon.ammoCount
+    const velBefore = cloneVec2(gs.spriteParts.velocity[spr.num])
+
+    spr.fire()
+
+    // 산탄 1+5 = 6발 (4149-4165)
+    expect(activeBullets().length).toBe(6)
+    expect(spr.weapon.ammoCount).toBe(ammoBefore - 1)
+    // 반동: Velocity -= (b.x*0.0412, b.y*0.041) — 오른쪽 발사라 -x 반동 (4167-4169)
+    expect(gs.spriteParts.velocity[spr.num].x).toBeLessThan(velBefore.x)
+    // CanAutoReloadSpas := False (4230-4231)
+    expect(spr.canAutoReloadSpas).toBe(false)
+  })
+
+  it('throwGrenade: tertiaryWeapon.ammoCount>0 → FRAGNADE 탄 생성+감소 (4698-4811)', () => {
+    const spr = combatSpawn()
+    expect(spr.tertiaryWeapon.num).toBe(guns[FRAGGRENADE].num) // createSprite 지급 (293)
+    spr.tertiaryWeapon.ammoCount = 2
+
+    // 던지기 시작: ThrowNade 눌림 → Throw 애니메이션
+    spr.grenadeCanThrow = true
+    spr.control.throwNade = true
+    spr.throwGrenade()
+    expect(spr.bodyAnimation.id).toBe(gs.anims.throw.id)
+
+    // 홀드 최대 프레임(36) 도달 → 투척
+    spr.bodyAnimation.currFrame = 36
+    spr.throwGrenade()
+
+    const bullets = activeBullets()
+    expect(bullets.length).toBe(1)
+    expect(gs.bullet[bullets[0]].style).toBe(BULLET_STYLE_FRAGNADE)
+    expect(gs.bullet[bullets[0]].ownerWeapon).toBe(guns[FRAGGRENADE].num)
+    expect(spr.tertiaryWeapon.ammoCount).toBe(1)
+    expect(spr.grenadeCanThrow).toBe(false)
+  })
+
+  it('throwFlag: 운반 깃발 투척 — holdingSprite/holdedThing 해제 + flagGrabCooldown (4599-4696)', () => {
+    const spr = combatSpawn(TEAM_BRAVO)
+    const f = createThing(gs, cloneVec2(gs.spriteParts.pos[spr.num]), 255, OBJECT_ALPHA_FLAG, 255)
+    gs.thing[f].holdingSprite = spr.num
+    spr.holdedThing = f
+    // 깃발 스켈레톤을 스프라이트 위치로 (투척 전 레이캐스트/충돌 검사 통과 위치)
+    for (let j = 1; j <= 4; j++) {
+      gs.thing[f].skeleton.pos[j] = cloneVec2(gs.spriteParts.pos[spr.num])
+      gs.thing[f].skeleton.oldPos[j] = cloneVec2(gs.spriteParts.pos[spr.num])
+    }
+
+    spr.control.flagThrow = true
+    spr.throwFlag()
+
+    expect(gs.thing[f].holdingSprite).toBe(0)
+    expect(spr.holdedThing).toBe(0)
+    expect(spr.flagGrabCooldown).toBe(15) // SECOND div 4
+    expect(gs.thing[f].staticType).toBe(false)
+  })
+
+  it('respawn: selWeapon 지급 + secWep 규칙 + M79 빈탄창 (Respawn 3580-3612)', () => {
+    const spr = combatSpawn()
+    spr.selWeapon = guns[M79].num // 7 (프라이머리는 index=num)
+    spr.player!.secWep = 0 // SecWep := 0+1 → SecondaryWeapon = Guns[PRIMARY_WEAPONS+1] = COLT
+
+    spr.respawn()
+
+    expect(spr.weapon.num).toBe(guns[M79].num)
+    expect(spr.weapon.ammoCount).toBe(0) // Weapons.pas:1354 Force M79 reload on spawn
+    expect(spr.secondaryWeapon.num).toBe(guns[COLT].num)
+    // TertiaryWeapon := Guns[FRAGGRENADE] + sv_maxgrenades div 2 (3548-3550)
+    expect(spr.tertiaryWeapon.num).toBe(guns[FRAGGRENADE].num)
+    expect(spr.tertiaryWeapon.ammoCount).toBe(Math.trunc(gs.svMaxgrenades / 2))
+  })
+
+  it('respawn: selWeapon=0이면 맨손(NOWEAPON) 유지 (3581)', () => {
+    const spr = combatSpawn()
+    spr.selWeapon = 0
+    spr.applyWeaponByNum(guns[AK74].num, 1)
+    spr.respawn()
+    expect(spr.weapon.num).toBe(NOWEAPON_NUM)
   })
 })
 

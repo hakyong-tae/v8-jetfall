@@ -112,6 +112,11 @@ export function updateFrame(gs: GameState): void {
   // TODO(M2): 람보 활 재스폰 (586-609) — Things/Guns 의존
   // TODO(M2): 중복 깃발 정리 + 깃발 재생성 (612-678) — Things 의존
   // TODO(M3): 데모 자동 녹화 (680-684)
+
+  // 클라 UpdateFrame.pas:202-203 — bink 누적치 감쇠. 원본 서버 순서엔 없는 클라 전용 틱이지만,
+  // Fire(T7)가 채택한 hitSprayCounter(state.ts 필드 주석 참조)의 유일한 감쇠 경로라 함께 채택
+  // (없으면 bink가 무한 누적되어 발사 부정확도가 MAX_INACCURACY에 고정된다).
+  if (gs.hitSprayCounter > 0) gs.hitSprayCounter--
 }
 
 // 테스트/시뮬 편의: n틱 진행.

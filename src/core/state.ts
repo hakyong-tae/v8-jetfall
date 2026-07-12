@@ -252,10 +252,30 @@ export interface GameState {
   playersTeamNum: number[]
   // Game.pas:86 `WeaponSel: array[1..MAX_SPRITES, 1..MAIN_WEAPONS] of Byte` — 플레이어별 무기
   // 선택 허용 비트. Die의 advance-mode 블록이 조작, Respawn(T7)이 읽는다. 1-based, [0] 더미행.
+  // 초기값 1 채택 (M2 Task 7 수정): 서버 기동 시 `WeaponSel[j][i] := WeaponActive[i]`(=1,
+  // Server.pas:1100-1102)이고, 비-advancemode 정상 상태에선 ServerLoop.pas:533-536이 매 틱
+  // 전부 1로 유지한다 — mapChangeCounter=-60과 같은 "기동 완료 상태" 초기값 규약.
   weaponSel: number[][]
   // Server.pas:233 `WeaponActive: array[-1..15] of Byte` — 서버 무기 허용 목록. 이 포트는
   // 1..MAIN_WEAPONS만 쓰며(음수/0/15 인덱스는 서버 콘솔 명령 전용) 기본 전부 허용(=1).
+  // 단 [0]은 Pascal 전역 zero-init 그대로 0 — Respawn 봇 무기 랜덤 루프(Sprites.pas:3668)가
+  // `WeaponActive[Weapon.Num]`을 Num으로 직접 인덱싱하는데 COLT_NUM=0이라 [0]=0이어야
+  // "COLT는 프라이머리로 채택 불가" 원본 동작이 보존된다 (M2 Task 7 수정).
   weaponActive: number[]
+
+  // ── Server.pas:266 `WeaponsInGame: Integer` — 활성(WeaponActive=1) 프라이머리+세컨더리 수.
+  // Server.pas:755-758/1093-1097이 (재)집계: for j := 1 to MAIN_WEAPONS. 기본 전부 활성이라
+  // 정상 상태 초기값 = MAIN_WEAPONS(14) 채택 (mapChangeCounter=-60과 같은 "기동 완료 상태" 규약).
+  // Respawn(Sprites.pas:3673/3715)의 미니건 배정·맨손 폴백이 읽는다.
+  weaponsInGame: number
+
+  // ── Client.pas:270 `HitSprayCounter: Word` — 로컬 플레이어의 bink 누적치(피격 스프레이 +
+  // 발사 자기-bink). Fire(Sprites.pas:4010-4018/4529-4546)가 부정확도 가산·누적에 사용,
+  // 클라 UpdateFrame.pas:202-203이 매 틱 1 감소. 원본 {$IFNDEF SERVER} 단일 전역(MySprite
+  // 전용)이지만 이 포트는 발사 느낌의 게임플레이 성분이라 채택 — 모든 인간 스프라이트가
+  // 로컬이므로 HUMAN 게이트로 번역한다 (control.ts 헤더 예외 2와 동일 논리).
+  // ⚠ 인간이 동시에 2명 이상이면 원본에 없던 상태 공유가 생긴다 (gs.was*와 동일한 주의).
+  hitSprayCounter: number
 }
 
 export function createGameState(): GameState {
@@ -342,10 +362,13 @@ export function createGameState(): GameState {
     teamAliveNum: new Array(6).fill(0),
     playersTeamNum: new Array(5).fill(0),
     weaponSel: Array.from({ length: MAX_SPRITES + 1 }, () =>
-      new Array(MAIN_WEAPONS + 1).fill(0),
+      new Array(MAIN_WEAPONS + 1).fill(1),
     ),
     weaponActive: new Array(MAIN_WEAPONS + 1).fill(1),
+    weaponsInGame: MAIN_WEAPONS,
+    hitSprayCounter: 0,
   }
+  gs.weaponActive[0] = 0 // Pascal 전역 zero-init — COLT_NUM=0 인덱싱 보존 (필드 주석 참조)
   // Pascal의 Sprite 배열은 항상 존재하는 레코드들(Active 플래그로 사용 여부 표시) — 여기서도
   // MAX_SPRITES개를 미리 만들어 둔다. [0]은 1-based 더미.
   gs.sprite = Array.from({ length: MAX_SPRITES + 1 }, (_, i) => new TSprite(gs, i))
