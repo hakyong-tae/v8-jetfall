@@ -51,7 +51,7 @@ function sampleSprite(num: number): SnapshotSprite {
     legsAnimId: 3, legsFrame: 7, bodyAnimId: 9, bodyFrame: 12,
     lastInputSeq: 555,
     posX: 1234.5, posY: -678.25, velX: 2.5, velY: -0.125,
-    kills: 2, deaths: 3,
+    kills: 2, deaths: 3, weaponNum: 3,
     control: { left: true, right: false, up: false, down: true, fire: false, jetpack: true,
       throwNade: false, changeWeapon: false, throwWeapon: false, reload: false, prone: false,
       flagThrow: false, mouseAimX: 900, mouseAimY: -400 },
@@ -79,13 +79,19 @@ describe('SNAPSHOT binary round-trip', () => {
     expect(decoded.sprites[0].posX).toBeCloseTo(1234.5, 3)
     expect(decoded.sprites[0].control).toEqual(msg.sprites[0].control)
     expect(decoded.sprites[0].deadMeat).toBe(false)
+    expect(decoded.sprites[0].weaponNum).toBe(3) // 코스메틱 갭 수정: 무기 로드아웃 동기화
+  })
+  it('round-trips weaponNum at the Uint8 ceiling (NOWEAPON_NUM=255)', () => {
+    const msg: SnapshotMsg = { tick: 1, teamScore1: 0, teamScore2: 0,
+      sprites: [{ ...sampleSprite(2), weaponNum: 255 }] }
+    expect(decodeSnapshot(encodeSnapshot(msg)).sprites[0].weaponNum).toBe(255)
   })
   it('8-sprite snapshot stays under 420 bytes (bandwidth bound, Phase C 37B/sprite)', () => {
     const msg: SnapshotMsg = { tick: 1, teamScore1: 0, teamScore2: 0,
       sprites: Array.from({ length: 8 }, (_, i) => sampleSprite(i + 1)) }
     const bytes = encodeSnapshot(msg).byteLength
     expect(bytes).toBeLessThanOrEqual(420)
-    // 실측치: 헤더 8B + 8 × 37B/스프라이트 = 304B (CTF 깃발 없을 때). 30Hz ≈ 9KB/s.
+    // 실측치: 헤더 8B + 8 × 38B/스프라이트 = 312B (CTF 깃발 없을 때). 30Hz ≈ 9.4KB/s.
   })
 })
 
@@ -111,7 +117,7 @@ describe('SNAPSHOT extended with kills/deaths/teamScore/flags (Phase C)', () => 
     return {
       num, team: 1, direction: 1, deadMeat: false, health: 100, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX: 0, posY: 0, velX: 0, velY: 0, kills, deaths,
+      posX: 0, posY: 0, velX: 0, velY: 0, kills, deaths, weaponNum: 0,
       control: { left: false, right: false, up: false, down: false, fire: false, jetpack: false,
         throwNade: false, changeWeapon: false, throwWeapon: false, reload: false, prone: false,
         flagThrow: false, mouseAimX: 0, mouseAimY: 0 },
@@ -150,7 +156,7 @@ describe('SNAPSHOT extended with kills/deaths/teamScore/flags (Phase C)', () => 
     }
     const bytes = encodeSnapshot(msg).byteLength
     expect(bytes).toBeLessThanOrEqual(420)
-    // 실측: 헤더 8B + 8×37B(스프라이트) + 2×11B(깃발) = 8+296+22 = 326B. 30Hz ≈ 9.8KB/s.
+    // 실측: 헤더 8B + 8×38B(스프라이트) + 2×11B(깃발) = 8+304+22 = 334B. 30Hz ≈ 10KB/s.
   })
 })
 

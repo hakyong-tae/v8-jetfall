@@ -38,7 +38,10 @@ import { Hud } from './hud'
 import { SoundSystem, wireSound } from './sound'
 import { InputState } from './input'
 import { Camera } from './camera'
-import { mountLobby, type StartMatchArg } from './lobby/lobby-ui'
+import { mountLobby, buildSettingsPanel, type StartMatchArg } from './lobby/lobby-ui'
+import { GAME_TITLE, GAME_TAGLINE } from './brand'
+import { injectTheme } from './lobby/ui-theme'
+import { loadSettings } from './settings'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
 import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
@@ -145,6 +148,10 @@ async function buildScene(gs: GameState, mapFile: LoadedAssets['mapFile'], manif
 
   // 사운드 초기화(카메라 필요) 후 gs.playSound 배선. 실패해도(WebAudio 미지원) 무음 진행.
   await sound.init(camera)
+  // M4-A: 영속 설정(localStorage) 적용 — 봇전/네트전/ws데모 전 경로 공통 적용점.
+  const settings = loadSettings()
+  sound.setMasterVolume(settings.sfxVolume)
+  sound.setMuted(settings.muted)
   wireSound(gs, sound)
   // AudioContext resume을 실제 사용자 제스처(캔버스/윈도우 클릭·키)에 바인딩 — 봇 선발사 무음버그 방지.
   sound.bindResumeGestures(app.canvas)
@@ -166,10 +173,78 @@ function toLocalInput(c: TControl): LocalInput {
     prone: c.prone, flagThrow: c.flagThrow, mouseAimX: c.mouseAimX, mouseAimY: c.mouseAimY }
 }
 
-async function startBotMatch(): Promise<void> {
-  // ── 게임모드 (URL ?mode=ctf → CTF, 아니면 DM)
+// ── M4-A: 인게임 ESC 오버레이 메뉴 (RESUME / SETTINGS / LEAVE TO MENU) ──
+// pausable=오프라인 봇전만 true(시뮬 일시정지). 네트 매치는 공정성 때문에 시뮬 계속 + 오버레이만.
+// LEAVE: onLeave(트랜스포트 leave 등) → app 파괴 → body 클리어 → boot() 재호출로 메뉴 복귀.
+function attachEscMenu(
+  app: Application,
+  sound: SoundSystem,
+  o: { pausable: boolean; onLeave?: () => void },
+): { paused: () => boolean; dispose: () => void } {
+  injectTheme() // ?nolobby=1 직행 경로는 mountLobby를 안 거치므로 여기서도 보장
+  let overlay: HTMLElement | null = null
+  let disposed = false
+
+  const close = (): void => { overlay?.remove(); overlay = null }
+  const leave = (): void => {
+    dispose()
+    try { o.onLeave?.() } catch { /* leave 실패는 무시 — 어차피 파괴 */ }
+    app.ticker.stop()
+    app.destroy(true)
+    document.body.innerHTML = ''
+    // 개발용 직행 파라미터(?nolobby/?wshost/?mode)를 제거해 진짜 '메뉴로 나가기'가 되게 한다.
+    const url = new URL(window.location.href)
+    for (const k of ['nolobby', 'wshost', 'acc', 'mode']) url.searchParams.delete(k)
+    window.history.replaceState(null, '', url)
+    boot()
+  }
+  const open = (): void => {
+    overlay = document.createElement('div')
+    overlay.className = 'jf-overlay'
+    const panel = document.createElement('div')
+    panel.className = 'jf-panel'
+    panel.innerHTML = `
+      <h2 class="jf-h">${o.pausable ? 'Paused' : 'Menu'}</h2>
+      ${o.pausable ? '' : '<div class="jf-muted">멀티플레이 중 — 게임은 계속 진행됩니다</div>'}
+      <nav class="jf-menu" style="align-items:stretch">
+        <button class="jf-menu-item" id="jf-esc-resume">Resume</button>
+        <button class="jf-menu-item" id="jf-esc-settings">Settings</button>
+        <button class="jf-menu-item" id="jf-esc-leave">Leave to Menu</button>
+      </nav>
+      <div id="jf-esc-settings-slot"></div>`
+    overlay.appendChild(panel)
+    document.body.appendChild(overlay)
+    panel.querySelector('#jf-esc-resume')!.addEventListener('click', close)
+    panel.querySelector('#jf-esc-leave')!.addEventListener('click', leave)
+    panel.querySelector('#jf-esc-settings')!.addEventListener('click', () => {
+      const slot = panel.querySelector('#jf-esc-settings-slot') as HTMLElement
+      if (slot.childElementCount > 0) { slot.innerHTML = ''; return } // 토글
+      slot.appendChild(buildSettingsPanel((s) => {
+        sound.setMasterVolume(s.sfxVolume)
+        sound.setMuted(s.muted)
+      }))
+    })
+  }
+  const onKey = (e: KeyboardEvent): void => {
+    // e.key 기준 — 합성 이벤트(테스트 드라이버 등)는 code가 비어있을 수 있다
+    if ((e.key !== 'Escape' && e.code !== 'Escape') || disposed) return
+    e.preventDefault()
+    if (overlay) close()
+    else open()
+  }
+  window.addEventListener('keydown', onKey)
+  const dispose = (): void => {
+    disposed = true
+    window.removeEventListener('keydown', onKey)
+    close()
+  }
+  return { paused: () => o.pausable && overlay !== null, dispose }
+}
+
+async function startBotMatch(mode?: 'dm' | 'ctf'): Promise<void> {
+  // ── 게임모드 — 메뉴 인자 우선, 없으면 URL ?mode=ctf 호환(개발 경로)
   const params = new URLSearchParams(window.location.search)
-  const ctf = params.get('mode') === 'ctf'
+  const ctf = mode ? mode === 'ctf' : params.get('mode') === 'ctf'
   const { gs, manifest, mapFile } = await loadGameAssets(ctf)
 
   // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
@@ -236,9 +311,13 @@ async function startBotMatch(): Promise<void> {
     },
   }
 
+  // ── ESC 오버레이 — 오프라인 봇전은 pausable(시뮬 일시정지)
+  const esc = attachEscMenu(app, sound, { pausable: true })
+
   // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
   let acc = 0
   app.ticker.add((ticker) => {
+    if (esc.paused()) { acc = 0; sound.updateJetpack(false, null); return } // ESC 일시정지 가드
     acc += ticker.deltaMS
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
@@ -314,6 +393,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     if (degraded) return
     degraded = true
     console.warn(`[net] falling back to offline bots: ${reason}`)
+    esc.dispose() // 이전 매치의 ESC 리스너 제거 (새 봇전이 자기 것을 단다)
     app.ticker.stop(); app.destroy(true); document.body.innerHTML = ''
     startBotMatch().catch(fail)
   }
@@ -352,6 +432,15 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
 
   // §설계결정5 수동우회용 디버그 훅(전용호스트 Plan-B의 dedicatedHostUrl 수동기록 등).
   ;(window as unknown as Record<string, unknown>).__soldatNet = { lobby: a.lobby, gs, net: transport }
+
+  // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈.
+  const esc = attachEscMenu(app, sound, {
+    pausable: false,
+    onLeave: () => {
+      void a.lobby.leave().catch(() => undefined)
+      if (dedicatedUrl) void transport.leaveRoom().catch(() => undefined)
+    },
+  })
 
   // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
   let acc = 0
@@ -417,6 +506,9 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
   let myNum = -1
   ;(window as unknown as Record<string, unknown>).__soldatNet = { gs, net: transport, account }
 
+  // ── ESC 오버레이 — ws 데모도 네트 매치(시뮬 계속). LEAVE 시 룸 이탈 + 파라미터 제거 후 메뉴.
+  attachEscMenu(app, sound, { pausable: false, onLeave: () => void transport.leaveRoom().catch(() => undefined) })
+
   let acc = 0
   app.ticker.add((ticker) => {
     acc += ticker.deltaMS
@@ -446,6 +538,8 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
 // 부트: 로비 경유. ?nolobby=1이면 봇전 직행(개발 편의). ?wshost=…이면 로컬멀티 데모(로비 우회).
 // onStartMatch: 온라인이면 네트 인게임(B), 미배포/오프라인이면 봇전 폴백(A단계 그대로).
 function boot(): void {
+  // 브라우저 탭 타이틀도 브랜드 단일소스에서 — index.html의 정적 title을 덮는다(리뷰 지적: 사용자 노출 표면).
+  document.title = `${GAME_TITLE} — ${GAME_TAGLINE}`
   const params = new URLSearchParams(window.location.search)
   const wshost = params.get('wshost')
   if (wshost) {
@@ -463,7 +557,9 @@ function boot(): void {
       if (a.lobby.net.status === 'online') startNetMatch(a).catch(fail)
       else startBotMatch().catch(fail) // 미배포/오프라인 폴백
     },
-    onOfflineBots: () => { document.body.innerHTML = ''; startBotMatch().catch(fail) },
+    onOfflineBots: (mode) => { document.body.innerHTML = ''; startBotMatch(mode).catch(fail) },
+    // 메뉴 화면에선 살아있는 SoundSystem이 없음 — 설정은 저장만 되고 인게임 진입 시 적용된다.
+    // (인게임 ESC 설정은 attachEscMenu가 live sound에 즉시 반영)
   })
 }
 

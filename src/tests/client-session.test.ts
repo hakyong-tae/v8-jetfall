@@ -41,7 +41,7 @@ describe('ClientSession', () => {
     senderT.send(MSG.SNAPSHOT, encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
       num: 5, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX: 100, posY: 200, velX: 0, velY: 0, kills: 0, deaths: 0, control: neutralControl(),
+      posX: 100, posY: 200, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum: 3, control: neutralControl(),
     }] }))
     await Promise.resolve()
     expect(gs.sprite[5].active).toBe(true)
@@ -63,7 +63,7 @@ describe('ClientSession', () => {
     hostT.send(MSG.SNAPSHOT, encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
       num: 3, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX: 0, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, control: neutralControl(),
+      posX: 0, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum: 3, control: neutralControl(),
     }] }))
     await Promise.resolve()
 
@@ -86,7 +86,7 @@ describe('ClientSession', () => {
     const snap = (posX: number) => encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
       num: 4, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, control: neutralControl(),
+      posX, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum: 3, control: neutralControl(),
     }] })
 
     hostT.send(MSG.SNAPSHOT, snap(0)) // 최초 생성 — pos=0
@@ -115,7 +115,7 @@ describe('ClientSession', () => {
     hostT.send(MSG.SNAPSHOT, encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
       num: 3, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX: 0, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, control: neutralControl(),
+      posX: 0, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum: 3, control: neutralControl(),
     }] }))
     await Promise.resolve()
 
@@ -141,7 +141,7 @@ describe('ClientSession', () => {
     hostT.send(MSG.SNAPSHOT, encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
       num: 6, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX: 0, posY: 0, velX: 0, velY: 0, kills: 4, deaths: 1, control: neutralControl(),
+      posX: 0, posY: 0, velX: 0, velY: 0, kills: 4, deaths: 1, weaponNum: 3, control: neutralControl(),
     }] }))
     await Promise.resolve()
     expect(gs.sprite[6].player!.kills).toBe(4)
@@ -167,7 +167,7 @@ describe('ClientSession', () => {
     const snap = (deadMeat: boolean, posX: number) => encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
       num: 8, team: 0, direction: 1, deadMeat, health: deadMeat ? 0 : 150, jetsCount: 0,
       legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
-      posX, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, control: neutralControl(),
+      posX, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum: 3, control: neutralControl(),
     }] })
 
     hostT.send(MSG.SNAPSHOT, snap(true, 500)) // 사망 상태로 첫 생성
