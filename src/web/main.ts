@@ -2,7 +2,7 @@
 // 씬 드로우 순서는 원본 GameRendering.pas RenderFrame(925-995) 그대로:
 //   배경 → 뒷폴리곤 → props0 → 병사 → props1 → 앞폴리곤 → props2
 import { Application, Container, Text } from 'pixi.js'
-import { createGameState, loadThingObjects } from '../core/state'
+import { createGameState, loadThingObjects, type GameState } from '../core/state'
 import { loadAnimObjects } from '../core/anims'
 import {
   loadSpriteObjects,
@@ -38,15 +38,18 @@ import { Hud } from './hud'
 import { SoundSystem, wireSound } from './sound'
 import { InputState } from './input'
 import { Camera } from './camera'
-import { mountLobby } from './lobby/lobby-ui'
+import { mountLobby, type StartMatchArg } from './lobby/lobby-ui'
+import { HostSession, type HostSessionPlayer } from '../net/host-session'
+import { ClientSession, type LocalInput } from '../net/client-session'
+import type { TControl } from '../core/sprites'
 
 const MAP_NAME = 'ctf_ash' // manifest.maps 키
 const TICK_MS = 1000 / 60 // 16.6667ms 고정스텝
 const MAX_CATCHUP_TICKS = 5
 const NUM_BOTS = 4 // DM 봇 수 (CTF는 팀당 절반)
 
-async function startBotMatch(): Promise<void> {
-  // ── 에셋 + 심 상태 (tests/helpers.ts setupTestGame의 브라우저판)
+// ── 에셋 + 심 상태 로드 (tests/helpers.ts setupTestGame의 브라우저판). 봇전/네트전 공용.
+async function loadGameAssets(ctf: boolean) {
   const manifest = await loadManifest()
   const read = await prefetchAnimFiles(manifest)
 
@@ -65,43 +68,29 @@ async function startBotMatch(): Promise<void> {
   gs.map.loadData(mapFile)
   loadWaypoints(gs.botPath, mapFile.waypoints) // PolyMap.pas:236-255 BotPath 브리지
 
-  // ── 게임모드 (URL ?mode=ctf → CTF, 아니면 DM). CTF면 CTF 깃발 무결성 가드가 첫 틱에 깃발 스폰.
-  const params = new URLSearchParams(window.location.search)
-  const ctf = params.get('mode') === 'ctf'
+  // ── 게임모드. CTF면 CTF 깃발 무결성 가드가 첫 틱에 깃발 스폰.
   gs.svGamemode = ctf ? GAMESTYLE_CTF : GAMESTYLE_DEATHMATCH
   gs.svKilllimit = ctf ? 10 : 9999 // DM은 소크 중 라운드 리셋 방지(디버그 편의), CTF는 기본 캡
+  return { gs, manifest, mapFile }
+}
 
-  // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
-  const playerTeam = ctf ? TEAM_ALPHA : TEAM_NONE
-  const player = createTPlayer()
-  player.name = 'Web'
-  player.team = playerTeam
-  // 로컬 플레이어를 눈에 띄게 — DM에선 셔츠 청록(0x33ccff)으로 자기 병사 식별(CTF에선 팀색이 강제됨).
-  player.shirtColor = 0x33ccff
-  player.hairStyle = 1
-  player.headgear = 0
-  const r = randomizeStart(gs, playerTeam)
-  const me = createSprite(gs, r.start, vector2(0, 0), 1, 255, player, true)
-  if (me < 0) throw new Error('createSprite failed')
-  // AK-74 + 보조권총 로드아웃 (respawn이 selWeapon/secWep 규칙대로 지급 — Respawn 3580-3612)
-  gs.sprite[me].selWeapon = guns[AK74].num
-  gs.sprite[me].player!.secWep = 0
-  gs.sprite[me].respawn()
+type LoadedAssets = Awaited<ReturnType<typeof loadGameAssets>>
 
-  // ── 봇 스폰 (bots.json). DM=무팀 N기, CTF=팀당 N/2기(플레이어 alpha 보정 위해 bravo 우선).
-  const bots = (await (await fetch('/assets/bots.json')).json()) as Record<string, BotConfigEntry>
-  const botNames = Object.keys(bots)
-  if (ctf) {
-    for (let i = 0; i < NUM_BOTS; i++) {
-      const team = i % 2 === 0 ? TEAM_BRAVO : TEAM_ALPHA
-      addBotPlayer(gs, bots[botNames[i % botNames.length]], team)
-    }
-  } else {
-    for (let i = 0; i < NUM_BOTS; i++) {
-      addBotPlayer(gs, bots[botNames[i % botNames.length]], TEAM_NONE)
-    }
-  }
+interface Scene {
+  app: Application
+  world: Container
+  bgLayer: Container
+  gostek: GostekPool
+  entities: BulletsRenderer
+  hud: Hud
+  sound: SoundSystem
+  input: InputState
+  camera: Camera
+}
 
+// ── PIXI 씬 구성 (앱/텍스처/레이어/HUD/사운드/입력/카메라). 봇전/네트전 공용.
+// 드로우 순서는 원본 GameRendering.pas RenderFrame(925-995) 그대로.
+async function buildScene(gs: GameState, mapFile: LoadedAssets['mapFile'], manifest: LoadedAssets['manifest']): Promise<Scene> {
   // ── PIXI (커스텀 GlProgram 셰이더 사용 — WebGL 강제)
   const app = new Application()
   await app.init({
@@ -112,7 +101,6 @@ async function startBotMatch(): Promise<void> {
   })
   document.body.appendChild(app.canvas)
 
-  // ── 씬 구성
   const mapTexture = await loadTexture(manifest, mapTextureKey(mapFile))
   if (!mapTexture) throw new Error(`map texture missing: ${mapTextureKey(mapFile)}`)
   const gostekTextures = await loadGostekTextures(manifest)
@@ -146,6 +134,74 @@ async function startBotMatch(): Promise<void> {
   // ── 사운드 (WebAudio) — gs.playSound 훅 배선. AudioContext는 첫 사용자 제스처 후 resume.
   const sound = new SoundSystem(manifest)
 
+  // ── 입력/카메라
+  const input = new InputState()
+  input.attach(app.canvas)
+  const camera = new Camera()
+
+  // 사운드 초기화(카메라 필요) 후 gs.playSound 배선. 실패해도(WebAudio 미지원) 무음 진행.
+  await sound.init(camera)
+  wireSound(gs, sound)
+  // AudioContext resume을 실제 사용자 제스처(캔버스/윈도우 클릭·키)에 바인딩 — 봇 선발사 무음버그 방지.
+  sound.bindResumeGestures(app.canvas)
+
+  return { app, world, bgLayer, gostek, entities, hud, sound, input, camera }
+}
+
+// 빈 TControl 스크래치 — 매 틱 input.applyTo로 채운 뒤 LocalInput으로 복사(재사용, 할당 0).
+function createScratchControl(): TControl {
+  return { left: false, right: false, up: false, down: false, fire: false, jetpack: false,
+    throwNade: false, changeWeapon: false, throwWeapon: false, reload: false, prone: false,
+    flagThrow: false, mouseAimX: 0, mouseAimY: 0, mouseDist: 0 }
+}
+
+// TControl → LocalInput (seq/mouseDist 제외한 나머지 이름 그대로).
+function toLocalInput(c: TControl): LocalInput {
+  return { left: c.left, right: c.right, up: c.up, down: c.down, fire: c.fire, jetpack: c.jetpack,
+    throwNade: c.throwNade, changeWeapon: c.changeWeapon, throwWeapon: c.throwWeapon, reload: c.reload,
+    prone: c.prone, flagThrow: c.flagThrow, mouseAimX: c.mouseAimX, mouseAimY: c.mouseAimY }
+}
+
+async function startBotMatch(): Promise<void> {
+  // ── 게임모드 (URL ?mode=ctf → CTF, 아니면 DM)
+  const params = new URLSearchParams(window.location.search)
+  const ctf = params.get('mode') === 'ctf'
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf)
+
+  // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
+  const playerTeam = ctf ? TEAM_ALPHA : TEAM_NONE
+  const player = createTPlayer()
+  player.name = 'Web'
+  player.team = playerTeam
+  // 로컬 플레이어를 눈에 띄게 — DM에선 셔츠 청록(0x33ccff)으로 자기 병사 식별(CTF에선 팀색이 강제됨).
+  player.shirtColor = 0x33ccff
+  player.hairStyle = 1
+  player.headgear = 0
+  const r = randomizeStart(gs, playerTeam)
+  const me = createSprite(gs, r.start, vector2(0, 0), 1, 255, player, true)
+  if (me < 0) throw new Error('createSprite failed')
+  // AK-74 + 보조권총 로드아웃 (respawn이 selWeapon/secWep 규칙대로 지급 — Respawn 3580-3612)
+  gs.sprite[me].selWeapon = guns[AK74].num
+  gs.sprite[me].player!.secWep = 0
+  gs.sprite[me].respawn()
+
+  // ── 봇 스폰 (bots.json). DM=무팀 N기, CTF=팀당 N/2기(플레이어 alpha 보정 위해 bravo 우선).
+  const bots = (await (await fetch('/assets/bots.json')).json()) as Record<string, BotConfigEntry>
+  const botNames = Object.keys(bots)
+  if (ctf) {
+    for (let i = 0; i < NUM_BOTS; i++) {
+      const team = i % 2 === 0 ? TEAM_BRAVO : TEAM_ALPHA
+      addBotPlayer(gs, bots[botNames[i % botNames.length]], team)
+    }
+  } else {
+    for (let i = 0; i < NUM_BOTS; i++) {
+      addBotPlayer(gs, bots[botNames[i % botNames.length]], TEAM_NONE)
+    }
+  }
+
+  // ── PIXI 씬 구성 (봇전/네트전 공용)
+  const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
+
   // ── 디버그 오버레이
   const debug = new Text({
     text: '',
@@ -154,18 +210,7 @@ async function startBotMatch(): Promise<void> {
   debug.position.set(8, 8)
   app.stage.addChild(debug)
 
-  // ── 입력/카메라
-  const input = new InputState()
-  input.attach(app.canvas)
-  const camera = new Camera()
-
   const spr = gs.sprite[me]
-
-  // 사운드 초기화(카메라 필요) 후 gs.playSound 배선. 실패해도(WebAudio 미지원) 무음 진행.
-  await sound.init(camera)
-  wireSound(gs, sound)
-  // AudioContext resume을 실제 사용자 제스처(캔버스/윈도우 클릭·키)에 바인딩 — 봇 선발사 무음버그 방지.
-  sound.bindResumeGestures(app.canvas)
 
   // 개발 콘솔 디버그 핸들
   ;(window as unknown as Record<string, unknown>).__soldat = {
@@ -223,6 +268,71 @@ async function startBotMatch(): Promise<void> {
   })
 }
 
+// ── 네트 인게임 (호스트권위 이동 동기화, B단계). 씬 구성은 봇전과 공유(buildScene),
+// 차이는 스폰(HostSession.spawnPlayers vs 로컬 1인)과 루프 본문(host.tick/client.tick)뿐.
+async function startNetMatch(a: StartMatchArg): Promise<void> {
+  const ctf = a.mode === GAMESTYLE_CTF
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf)
+  const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
+
+  const account = a.lobby.account
+  const isHost = a.lobby.isHost
+  const transport = a.lobby.net
+
+  // 스크래치 TControl(매 틱 input.applyTo로 채움) → currentLocalInput(세션이 읽는 클로저 변수).
+  const scratch = createScratchControl()
+  let currentLocalInput: LocalInput = toLocalInput(scratch)
+
+  let myNum = -1
+  let hostSession: HostSession | null = null
+  let clientSession: ClientSession | null = null
+
+  if (isHost) {
+    hostSession = new HostSession(transport, gs)
+    const players: HostSessionPlayer[] = Object.entries(a.lobby.players)
+      .map(([acc, p]) => ({ account: acc, team: p.team }))
+    hostSession.spawnPlayers(players)
+    myNum = hostSession.spriteNumOf(account) ?? -1
+  } else {
+    clientSession = new ClientSession(transport, gs, account, () => currentLocalInput)
+  }
+
+  // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
+  let acc = 0
+  app.ticker.add((ticker) => {
+    acc += ticker.deltaMS
+    let ticks = 0
+    while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
+      input.applyTo(scratch, camera.x, camera.y, app.screen.width, app.screen.height)
+      currentLocalInput = toLocalInput(scratch)
+      if (isHost) {
+        if (myNum >= 0) Object.assign(gs.sprite[myNum].control, scratch) // 호스트 자신은 세션 경유 없이 직접 반영
+        hostSession!.tick()
+      } else {
+        clientSession!.tick()
+        if (clientSession!.myNum !== null) myNum = clientSession!.myNum
+      }
+      acc -= TICK_MS
+      ticks++
+    }
+    if (ticks === MAX_CATCHUP_TICKS) acc = 0 // 스파이럴 방지
+
+    // ── 렌더 동기화 — GostekPool 무수정 재사용, .active 스프라이트 전부 렌더
+    gostek.update(gs, myNum)
+    entities.update(gs)
+    if (myNum >= 0) {
+      hud.update(gs, myNum, app.screen.width, app.screen.height)
+      const spr = gs.sprite[myNum]
+      sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[myNum])
+      const px = gs.spriteParts.pos[myNum].x
+      const py = gs.spriteParts.pos[myNum].y
+      camera.update(px, py, input.mouseX, input.mouseY, app.screen.width, app.screen.height)
+      world.position.set(app.screen.width / 2 - camera.x, app.screen.height / 2 - camera.y)
+      bgLayer.position.set(app.screen.width / 2, app.screen.height / 2 - camera.y)
+    }
+  })
+}
+
 function fail(err: unknown): void {
   console.error('boot failed:', err)
   const pre = document.createElement('pre')
@@ -231,18 +341,21 @@ function fail(err: unknown): void {
   document.body.appendChild(pre)
 }
 
-// 부트: 로비 경유 (A단계). ?nolobby=1이면 봇전 직행(개발 편의).
-// onStartMatch도 A단계에선 봇전으로 폴백(네트 인게임 동기화는 B단계).
+// 부트: 로비 경유. ?nolobby=1이면 봇전 직행(개발 편의).
+// onStartMatch: 온라인이면 네트 인게임(B), 미배포/오프라인이면 봇전 폴백(A단계 그대로).
 function boot(): void {
   const params = new URLSearchParams(window.location.search)
   if (params.get('nolobby') === '1') {
     startBotMatch().catch(fail)
     return
   }
-  const launch = () => { document.body.innerHTML = ''; startBotMatch().catch(fail) }
   mountLobby(document.body, {
-    onStartMatch: launch,   // A단계: 네트 인게임(B) 전까지 봇전으로 폴백
-    onOfflineBots: launch,
+    onStartMatch: (a) => {
+      document.body.innerHTML = ''
+      if (a.lobby.net.status === 'online') startNetMatch(a).catch(fail)
+      else startBotMatch().catch(fail) // 미배포/오프라인 폴백
+    },
+    onOfflineBots: () => { document.body.innerHTML = ''; startBotMatch().catch(fail) },
   })
 }
 

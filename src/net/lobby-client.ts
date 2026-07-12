@@ -14,6 +14,7 @@ export class LobbyClient {
     transport.onMessage((event) => { if (event === MSG.START) this.startHandler() })
   }
   get account() { return this.transport.account }
+  get net(): Transport { return this.transport } // B단계 웹배선: 인게임 세션이 transport 직접 접근
   get isHost() { return this.roomState.hostAccount === this.account }
   get players(): Record<string, RoomPlayer> {
     const out: Record<string, RoomPlayer> = {}
