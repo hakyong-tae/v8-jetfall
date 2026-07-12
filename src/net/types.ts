@@ -16,6 +16,7 @@ export interface RoomState {
   hostAccount: string
   started: boolean
   roundEndsAt: number
+  dedicatedHostUrl?: string // D단계: 플랜B(자체ws) 전용호스트의 공개 ws URL. agent8-in-node 모드면 미설정.
   [playerKey: string]: unknown  // 'p_{account}' → RoomPlayer
 }
 

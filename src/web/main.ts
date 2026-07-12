@@ -41,6 +41,7 @@ import { Camera } from './camera'
 import { mountLobby, type StartMatchArg } from './lobby/lobby-ui'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
 import { ClientSession, type LocalInput } from '../net/client-session'
+import { makeWsClientTransport } from '../net/ws-client-transport'
 import type { TControl } from '../core/sprites'
 
 const MAP_NAME = 'ctf_ash' // manifest.maps 키
@@ -276,8 +277,12 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
 
   const account = a.lobby.account
-  const isHost = a.lobby.isHost
-  const transport = a.lobby.net
+  const dedicatedUrl = a.lobby.roomState.dedicatedHostUrl
+  // 전용호스트(플랜B)가 있으면: 사람은 항상 클라, 매치 트랜스포트만 별도 ws로 스위칭.
+  // 전용호스트(agent8-in-node)면: dedicatedUrl 미설정, 기존 배선 그대로(agent8 릴레이 공용).
+  const isHost = dedicatedUrl ? false : a.lobby.isHost
+  const transport = dedicatedUrl ? makeWsClientTransport(dedicatedUrl, account) : a.lobby.net
+  if (dedicatedUrl) await transport.connect()
 
   // 스크래치 TControl(매 틱 input.applyTo로 채움) → currentLocalInput(세션이 읽는 클로저 변수).
   const scratch = createScratchControl()
