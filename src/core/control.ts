@@ -60,6 +60,7 @@ import {
   THROWNKNIFE,
 } from './weapons'
 import { createBullet } from './bullets'
+import { controlBot } from './ai'
 import { type GameState, isTeamGame } from './state'
 import {
   RUNSPEED,
@@ -208,9 +209,10 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         // — 전부 클라 UI·카메라·렌더 가시성. 미채택 (시야 판정 함수 자체는 위에 포팅되어 있음).
       }
 
-      // {$IFDEF SERVER} ControlBot(SpriteC) (Control.pas:295-297)
-      // TODO(M3): AI.pas ControlBot 포팅 시 BOT 스프라이트의 control 필드를 여기서 채운다
-      // (브레인 상태는 TSprite.brain: TBotData로 준비되어 있음).
+      // {$IFDEF SERVER} ControlBot(SpriteC) (Control.pas:295-297) — 서버 권위 로컬 심 채택.
+      // AI.pas ControlBot이 BOT 스프라이트의 control 필드(사람이 쓰는 것과 동일한 TControl +
+      // mouseAim)를 채운 뒤, 아래 공통 전처리부터의 controlSprite 상태기계가 그대로 실행된다.
+      controlBot(gs, spriteC)
 
       /* ═══════════════ 공통 전처리 (Control.pas:299-311) ═══════════════ */
       if (spriteC.deadMeat) spriteC.freeControls()

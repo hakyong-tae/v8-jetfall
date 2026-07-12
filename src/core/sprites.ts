@@ -53,6 +53,7 @@ import {
   emptyGun,
   guns,
   weaponNumToIndex,
+  weaponNameToNum,
   calculateBink,
   isSecondaryWeaponIndex,
   NOWEAPON_NUM,
@@ -4112,6 +4113,99 @@ export function teamCollides(map: PolyMap, poly: number, team: number, bullet: b
 // things.ts로 이동했다. 기존 `from './sprites'` import 경로 호환을 위해 재수출한다
 // (이 파일 내부의 Respawn 경로도 위 import를 그대로 사용).
 export { randomizeStart }
+
+/* ****************************************************************************
+ *      봇 생성 — SharedConfig.pas:133-220 LoadBotConfig + Server.pas:925 AddBotPlayer  *
+ **************************************************************************** */
+
+// Net.pas:104 상당 — 봇 이름 최대 길이 (SharedConfig.pas가 Min(Length, PLAYERNAME_CHARS)로 자름).
+const PLAYERNAME_CHARS = 24
+
+// bots.json 항목 스키마 (build-assets.mjs가 .bot [BOT] 섹션 → JSON, T0). LoadBotConfig가 읽는
+// 키만 (색상/Chain/Hair 등 순수 렌더 필드는 core 미사용 — T13 web에서 사용).
+export interface BotConfigEntry {
+  Name: string
+  Favourite_Weapon: string
+  Secondary_Weapon: number
+  Friend: string
+  Accuracy: number
+  Shoot_Dead: number
+  Grenade_Frequency: number
+  OnStartUse: number
+  Chat_Frequency: number
+  Chat_Kill: string
+  Chat_Dead: string
+  Chat_LowHealth: string
+  Chat_SeeEnemy: string
+  Chat_Winning: string
+  Camping: number
+  Headgear?: number
+}
+
+// SharedConfig.pas:133-220 LoadBotConfig — bots.json 항목을 sprite.brain/player에 적재.
+// 원본은 파일 IO(TMemIniFile)지만 이 포트는 파싱된 JSON 항목을 받는다 (core IO-free).
+// 사운드/콘솔/스크립트 디스패치는 생략. 반환 = 성공 여부.
+export function loadBotConfig(gs: GameState, spriteC: TSprite, cfg: BotConfigEntry): boolean {
+  const brain = spriteC.brain
+
+  brain.favWeapon = weaponNameToNum(cfg.Favourite_Weapon)
+  spriteC.player!.secWep = cfg.Secondary_Weapon
+  brain.friend = cfg.Friend
+  brain.accuracy = cfg.Accuracy
+  brain.accuracy = trunc(brain.accuracy * (gs.botsDifficulty / 100))
+  brain.deadKill = cfg.Shoot_Dead
+  brain.grenadeFreq = cfg.Grenade_Frequency
+  brain.use = cfg.OnStartUse
+
+  brain.chatFreq = cfg.Chat_Frequency
+  brain.chatFreq = pascalRound(2.5 * brain.chatFreq)
+  brain.chatKill = cfg.Chat_Kill
+  brain.chatDead = cfg.Chat_Dead
+  brain.chatLowHealth = cfg.Chat_LowHealth
+  brain.chatSeeEnemy = cfg.Chat_SeeEnemy
+  brain.chatWinning = cfg.Chat_Winning
+
+  brain.camper = cfg.Camping
+
+  spriteC.player!.name = cfg.Name.slice(0, Math.min(cfg.Name.length, PLAYERNAME_CHARS))
+
+  // 색상(Color1/2/Skin/Hair/JetColor)은 렌더 전용 (TPlayer 최소 인터페이스에 미포팅) — 생략.
+  // Headgear → HeadCap(0=없음): core는 0 여부만 보고 WearHelmet을 세팅한다. 실제 GFX id 매핑
+  // (GFX_GOSTEK_KAP/HELM)은 web 렌더(T13) 소관이라 여기선 headgear 값을 그대로 보존.
+  const headgear = cfg.Headgear ?? 0
+  spriteC.player!.headCap = headgear === 0 ? 0 : headgear
+  if (spriteC.player!.headCap === 0) spriteC.wearHelmet = 0
+  else spriteC.wearHelmet = 1
+
+  spriteC.player!.controlMethod = BOT
+  spriteC.freeControls()
+
+  return true
+}
+
+// Server.pas:925-984 AddBotPlayer — 봇 스프라이트를 게임에 추가. 반환 = 스프라이트 인덱스
+// (실패=0). ServerSendNewPlayerInfo/콘솔 메시지/스크립트 디스패치는 네트·UI라 생략.
+export function addBotPlayer(gs: GameState, cfg: BotConfigEntry, team: number): number {
+  const newPlayer = createTPlayer()
+  newPlayer.team = team
+  // NewPlayer.ApplyShirtColorFromTeam() — 셔츠 색(렌더 전용) 생략.
+
+  const r = randomizeStart(gs, team)
+  const p = createSprite(gs, r.start, vector2(0, 0), 1, 255, newPlayer, true)
+  if (p < 0) return 0 // 서버 만원 (createSprite 슬롯 없음)
+
+  if (!loadBotConfig(gs, gs.sprite[p], cfg)) {
+    gs.sprite[p].kill()
+    return 0
+  }
+
+  gs.sprite[p].respawn()
+  gs.sprite[p].player!.controlMethod = BOT
+
+  gs.sortPlayers?.()
+
+  return p
+}
 
 /* ****************************************************************************
  *      loadSpriteObjects — Anims.pas LoadAnimObjects 끝부분 (341-360)        *

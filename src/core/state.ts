@@ -14,6 +14,7 @@ import { MAIN_WEAPONS } from './weapons'
 import { TSpark } from './sparks'
 import { TBullet } from './bullets'
 import { TThing } from './things'
+import { TWaypoints } from './waypoints'
 import {
   DEFAULT_CEASEFIRE_TIME,
   MAX_OLDPOS,
@@ -22,18 +23,6 @@ import {
   GAMESTYLE_INF,
   GAMESTYLE_HTF,
 } from './constants'
-
-// ── PLACEHOLDER TYPES (M2 Task 2) ───────────────────────────────────────────
-// Waypoints.pas isn't ported yet (Task 11 creates waypoints.ts). This minimal stand-in exists only
-// so the field below can be typed now. Task 11 DELETES this stub and replaces the import with the
-// real type — same field name in GameState, so no call-site changes are needed elsewhere.
-// (TBullet은 Task 4에서 bullets.ts의, TThing은 Task 5에서 things.ts의 실제 클래스로 교체 완료 —
-// 위 import 참조.)
-// TODO(T11): delete — waypoints.ts will export the real TWaypoints (Waypoints.pas:31-34 object:
-// `Waypoint: array[1..MAX_WAYPOINTS] of TWaypoint` + `FindClosest` method).
-export interface TWaypoints {
-  waypoint: unknown[]
-}
 
 // Game.pas:22-27 `TKillSort` — SortPlayers 정렬 슬롯. 원본 record는 Color: LongWord 필드를 갖지만
 // 그것은 {$IFNDEF SERVER} SortedTeamScore(스코어보드 색)에서만 쓰이는 클라 전용 값이라 이
@@ -161,6 +150,10 @@ export interface GameState {
   svFriendlyfire: boolean // sv_friendlyfire, Value=False (Cvar.pas:967)
   svBonusFrequency: number // sv_bonus_frequency, Value=0 (Cvar.pas:868)
   botsDifficulty: number // bots_difficulty, Value=100 (Cvar.pas:945; 300=stupid..10=impossible)
+  // ── M2 Task 11 추가분 (AI.pas ControlBot이 읽는 cvar — "발견 시 추가" 규약).
+  // bots_chat (Cvar.pas), Value=True. 봇 채팅(ServerSendStringMessage)은 M3 NET 스텁이므로
+  // 이 포트는 기본 False로 두어 채팅 분기를 비활성화한다 (게임플레이 영향 없음).
+  botsChat: boolean
   // sv_stationaryguns (Cvar.pas:875): `TBooleanCvar.Add(..., Value=False, DefaultValue=True, ...)`
   // — Value(실제 초기 동작)과 DefaultValue(리셋용)가 원본 자체에서 어긋난다. "고치지 말고 보존"
   // 규약대로 실제 초기 동작인 Value=False를 채택한다.
@@ -232,8 +225,8 @@ export interface GameState {
   rifleSkeleton55: ParticleSystem // scale 5.5
 
   // ── Game.pas:101 `BotPath: TWaypoints` — 봇 내비게이션 웨이포인트 그래프(단일 인스턴스, 스프라이트당
-  // 아님). Task 11(waypoints.ts)이 실제 타입/findClosest를 이관하기 전까지 placeholder. 맵
-  // 웨이포인트(mapfile.ts의 TWaypoint[])를 botPath로 복사하는 브리지도 Task 11 몫.
+  // 아님). waypoints.ts(Task 11)의 실제 TWaypoints 클래스. 맵 로드 시 loadWaypoints() 브리지가
+  // mapfile.ts의 TWaypoint[]를 여기에 복사한다 (PolyMap.pas:236-255).
   botPath: TWaypoints
 
   // ── Game.pas:88 `TeamScore: array[0..5] of Integer` — 인덱스는 TEAM_NONE(0)..TEAM_SPECTATOR(5).
@@ -346,6 +339,7 @@ export function createGameState(): GameState {
     svFriendlyfire: false,
     svBonusFrequency: 0,
     botsDifficulty: 100,
+    botsChat: false,
     svStationaryguns: false,
     svGunsCollide: false,
     svKitsCollide: false,
@@ -372,7 +366,7 @@ export function createGameState(): GameState {
     rifleSkeleton43: new ParticleSystem(),
     rifleSkeleton50: new ParticleSystem(),
     rifleSkeleton55: new ParticleSystem(),
-    botPath: { waypoint: [] },
+    botPath: new TWaypoints(),
     teamScore: new Array(6).fill(0),
     teamFlag: new Array(5).fill(0),
     playSound: () => {},

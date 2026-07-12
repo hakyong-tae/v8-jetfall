@@ -7,6 +7,7 @@ import { loadAnimObjects } from '../core/anims'
 import { loadSpriteObjects, createSprite, createTPlayer, randomizeStart } from '../core/sprites'
 import { createWeapons, loadWeaponsConfig, guns, AK74, type WeaponsIniConfig } from '../core/weapons'
 import { loadMapFile } from '../core/mapfile'
+import { loadWaypoints } from '../core/waypoints'
 import { updateFrame, wireGameHooks } from '../core/game'
 import { TEAM_ALPHA } from '../core/constants'
 import { vector2 } from '../core/vector'
@@ -44,6 +45,7 @@ async function boot(): Promise<void> {
 
   const mapFile = loadMapFile(await fetchBinary(manifest.maps[MAP_NAME]))
   gs.map.loadData(mapFile)
+  loadWaypoints(gs.botPath, mapFile.waypoints) // PolyMap.pas:236-255 BotPath 브리지
 
   // ── 플레이어 1명 스폰 (CTF alpha)
   const player = createTPlayer()

@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createGameState, loadThingObjects, type GameState } from '../core/state'
 import { loadAnimObjects } from '../core/anims'
 import { loadMapFile } from '../core/mapfile'
+import { loadWaypoints } from '../core/waypoints'
 import { loadSpriteObjects } from '../core/sprites'
 import { wireGameHooks } from '../core/game'
 
@@ -22,6 +23,8 @@ export function loadTestMap(gs: GameState, mapName = 'ctf_Ash.pms'): void {
   const buf = readFileSync(path.join(assetsDir, 'maps', mapName))
   const mapFile = loadMapFile(new Uint8Array(buf).buffer as ArrayBuffer)
   gs.map.loadData(mapFile)
+  // PolyMap.pas:236-255 — BotPath 브리지 (원본은 LoadData가 Game.pas 전역 BotPath를 직접 채움).
+  loadWaypoints(gs.botPath, mapFile.waypoints)
 }
 
 // 폴리곤 0개 맵 — PolyMap.initialize()가 이미 빈 섹터그리드를 깔아 두므로, 섹터 파라미터만
