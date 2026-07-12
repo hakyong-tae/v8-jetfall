@@ -14,10 +14,8 @@
 // 반대로 입력 샘플링(FreeControls+Binds 루프+MouseAim 갱신, 104-137)은 웹 입력 레이어/테스트가
 // controlSprite 호출 전에 control 필드를 채우는 것으로 대체되어 미채택.
 //
-// TODO(M2) 총기 식별 규약: Weapons.pas Guns[] 미포팅. `Weapon.Num = Guns[X].Num` 꼴 비교는
-// GUN_EQ(false), `<>` 꼴은 GUN_NEQ(true)로 대체한다 — "특정 특수총이 아닌 일반 총 소지" 가정
-// (이동 로직이 특수총 분기를 타지 않는 기본값). 각 사용처에 원본 조건을 주석으로 보존했으므로
-// Weapons.pas 포팅 시 기계적으로 교체하면 된다.
+// 총기 식별: M1의 GUN_EQ/GUN_NEQ 자리표시자는 M2 Task 7에서 전부 실제
+// `spriteC.weapon.num === guns[X].num` 비교로 교체·삭제되었다 (guns[]는 weapons.ts, T1).
 //
 // 유닛 전역: Control.pas:25-34의 WasRunningLeft/WasJumping/WasThrowingGrenade/
 // WasChangingWeapon/WasThrowingWeapon/WasReloadingWeapon ({$IFNDEF SERVER}) → GameState로 승격
@@ -46,6 +44,23 @@ import {
   POS_CROUCH,
   POS_PRONE,
 } from './sprites'
+import {
+  guns,
+  NOWEAPON,
+  KNIFE,
+  CHAINSAW,
+  LAW,
+  M79,
+  SPAS12,
+  BOW,
+  BOW2,
+  BARRETT,
+  MINIGUN,
+  M249,
+  THROWNKNIFE,
+} from './weapons'
+import { createBullet } from './bullets'
+import { controlBot } from './ai'
 import { type GameState, isTeamGame } from './state'
 import {
   RUNSPEED,
@@ -68,10 +83,6 @@ import {
   MELEE_DIST,
 } from './constants'
 
-// TODO(M2): 총기 식별 자리표시자 (파일 헤더 규약). `as boolean`은 리터럴 타입 좁힘(도달불가
-// 경고)을 피하기 위함.
-const GUN_EQ = false as boolean // SpriteC.Weapon.Num  =  Guns[X].Num
-const GUN_NEQ = true as boolean // SpriteC.Weapon.Num <> Guns[X].Num
 
 // Control.pas:36-59 CheckSpriteLineOfSightVisibility
 export function checkSpriteLineOfSightVisibility(
@@ -135,7 +146,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         spriteC.weapon.fireIntervalCount > spriteC.weapon.fireInterval ||
         spriteC.weapon.reloadTimeCount > spriteC.weapon.reloadTime
       ) {
-        spriteC.applyWeaponByNum(spriteC.weapon.num, 1) // TODO(M2) stub
+        spriteC.applyWeaponByNum(spriteC.weapon.num, 1)
         spriteC.weapon.ammoCount = 0
         // {$IFNDEF SERVER} if (Num = MySprite) and not DeadMeat then ClientSpriteSnapshot
         //   — 네트워크 스냅샷, 미채택
@@ -198,9 +209,10 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         // — 전부 클라 UI·카메라·렌더 가시성. 미채택 (시야 판정 함수 자체는 위에 포팅되어 있음).
       }
 
-      // {$IFDEF SERVER} ControlBot(SpriteC) (Control.pas:295-297)
-      // TODO(M3): AI.pas ControlBot 포팅 시 BOT 스프라이트의 control 필드를 여기서 채운다
-      // (브레인 상태는 TSprite.brain: TBotData로 준비되어 있음).
+      // {$IFDEF SERVER} ControlBot(SpriteC) (Control.pas:295-297) — 서버 권위 로컬 심 채택.
+      // AI.pas ControlBot이 BOT 스프라이트의 control 필드(사람이 쓰는 것과 동일한 TControl +
+      // mouseAim)를 채운 뒤, 아래 공통 전처리부터의 controlSprite 상태기계가 그대로 실행된다.
+      controlBot(gs, spriteC)
 
       /* ═══════════════ 공통 전처리 (Control.pas:299-311) ═══════════════ */
       if (spriteC.deadMeat) spriteC.freeControls()
@@ -269,8 +281,11 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       if (spriteC.stat === 0) {
         if (spriteC.position === POS_STAND) {
           if (spriteC.control.fire && spriteC.ceaseFireCounter < 0) {
-            // (Weapon.Num <> Guns[NOWEAPON].Num) and (<> Guns[KNIFE].Num) and (<> Guns[CHAINSAW].Num)
-            if (GUN_NEQ && GUN_NEQ && GUN_NEQ) {
+            if (
+              spriteC.weapon.num !== guns[NOWEAPON].num &&
+              spriteC.weapon.num !== guns[KNIFE].num &&
+              spriteC.weapon.num !== guns[CHAINSAW].num
+            ) {
               for (let i = 1; i <= MAX_SPRITES; i++) {
                 if (
                   gs.sprite[i].active &&
@@ -293,7 +308,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       // (not TargetMode or (SpriteC.Num <> MySprite))
       if (spriteC.stat === 0) {
         if (
-          GUN_EQ /* Weapon.Num = Guns[CHAINSAW].Num */ ||
+          spriteC.weapon.num === guns[CHAINSAW].num ||
           (spriteC.bodyAnimation.id !== anims.roll.id &&
             spriteC.bodyAnimation.id !== anims.rollBack.id &&
             spriteC.bodyAnimation.id !== anims.melee.id &&
@@ -305,7 +320,10 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
             spriteC.bodyAnimation.id !== anims.handsUpAim.id
           ) {
             if (spriteC.control.fire && spriteC.ceaseFireCounter < 0) {
-              if (GUN_EQ /* = Guns[NOWEAPON].Num */ || GUN_EQ /* = Guns[KNIFE].Num */) {
+              if (
+                spriteC.weapon.num === guns[NOWEAPON].num ||
+                spriteC.weapon.num === guns[KNIFE].num
+              ) {
                 spriteC.bodyApplyAnimation(anims.punch, 1)
               } else {
                 if (spriteC.weapon.fireIntervalCount === 0 && spriteC.weapon.ammoCount > 0) {
@@ -315,7 +333,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
                       // {$IFNDEF SERVER} Barrett/Minigun/LAW 와인드업 사운드 (437-461)
                       //   — TODO(M2/render)
                       if (
-                        GUN_NEQ /* Weapon.Num <> Guns[LAW].Num */ ||
+                        spriteC.weapon.num !== guns[LAW].num ||
                         ((spriteC.onGround || spriteC.onGroundPermanent) &&
                           ((spriteC.legsAnimation.id === anims.crouch.id &&
                             spriteC.legsAnimation.currFrame > 13) ||
@@ -327,10 +345,10 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
                         spriteC.weapon.startUpTimeCount--
                       }
                     } else {
-                      spriteC.fire() // TODO(M2) stub
+                      spriteC.fire()
                     }
                   } else {
-                    spriteC.fire() // TODO(M2) stub
+                    spriteC.fire()
                   }
                 }
               }
@@ -373,9 +391,9 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       /* ═══════════════ 깃발/수류탄 던지기 (Control.pas:538-554) ═══════════════ */
       // {$IFNDEF SERVER} TARGET MODE (540-549): 클라 관전 타깃 모드 해제 — 미채택.
       // {$ELSE} — 서버 분기 채택:
-      spriteC.throwFlag() // TODO(M2) stub
+      spriteC.throwFlag()
 
-      spriteC.throwGrenade() // TODO(M2) stub
+      spriteC.throwGrenade()
 
       /* ═══════════════ 무기 교체/버리기/장전 애니메이션 (Control.pas:556-745) ═══════════════ */
       // change weapon animation
@@ -394,7 +412,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       // {$IFNDEF SERVER} (569-573) — DontDrop은 나이프 던지기(로컬 채택 경로)가 세팅하는
       // 플래그라 해제도 함께 채택 (파일 헤더 예외 2와 짝).
       if (spriteC.dontDrop) {
-        if (!spriteC.control.throwWeapon || GUN_EQ /* Weapon.Num = Guns[KNIFE].Num */) {
+        if (!spriteC.control.throwWeapon || spriteC.weapon.num === guns[KNIFE].num) {
           spriteC.dontDrop = false
         }
       }
@@ -408,27 +426,27 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         spriteC.bodyAnimation.id !== anims.rollBack.id &&
         (spriteC.bodyAnimation.id !== anims.change.id || spriteC.bodyAnimation.currFrame > 25) &&
         spriteC.bonusStyle !== BONUS_FLAMEGOD &&
-        GUN_NEQ /* <> Guns[BOW].Num */ &&
-        GUN_NEQ /* <> Guns[BOW2].Num */ &&
-        GUN_NEQ /* <> Guns[NOWEAPON].Num */
+        spriteC.weapon.num !== guns[BOW].num &&
+        spriteC.weapon.num !== guns[BOW2].num &&
+        spriteC.weapon.num !== guns[NOWEAPON].num
       ) {
         spriteC.bodyApplyAnimation(anims.throwWeapon, 1)
 
-        if (GUN_EQ /* Weapon.Num = Guns[KNIFE].Num */) spriteC.bodyAnimation.speed = 2
+        if (spriteC.weapon.num === guns[KNIFE].num) spriteC.bodyAnimation.speed = 2
 
         // {$IFNDEF SERVER} StopSound(ReloadSoundChannel) — TODO(M2/render)
       }
 
       // reload
       if (
-        GUN_EQ /* Weapon.Num = Guns[CHAINSAW].Num */ ||
+        spriteC.weapon.num === guns[CHAINSAW].num ||
         (spriteC.bodyAnimation.id !== anims.roll.id &&
           spriteC.bodyAnimation.id !== anims.rollBack.id &&
           spriteC.bodyAnimation.id !== anims.change.id)
       ) {
         if (spriteC.control.reload) {
           if (spriteC.weapon.ammoCount !== spriteC.weapon.ammo) {
-            if (GUN_EQ /* Weapon.Num = Guns[SPAS12].Num */) {
+            if (spriteC.weapon.num === guns[SPAS12].num) {
               if (spriteC.weapon.ammoCount < spriteC.weapon.ammo) {
                 if (spriteC.weapon.fireIntervalCount === 0) {
                   spriteC.bodyApplyAnimation(anims.reload, 1)
@@ -507,20 +525,20 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
 
       // Throw away weapon (Control.pas:699-712)
       // {$IFNDEF SERVER} ThrowWeapon frame 2 → PlaySound(SFX_THROWGUN) — TODO(M2/render)
-      if (GUN_NEQ /* Weapon.Num <> Guns[KNIFE].Num */) {
+      if (spriteC.weapon.num !== guns[KNIFE].num) {
         if (
           spriteC.bodyAnimation.id === anims.throwWeapon.id &&
           spriteC.bodyAnimation.currFrame === 19 &&
-          GUN_NEQ /* Weapon.Num <> Guns[NOWEAPON].Num */
+          spriteC.weapon.num !== guns[NOWEAPON].num
         ) {
-          spriteC.dropWeapon() // TODO(M2) stub
+          spriteC.dropWeapon()
           spriteC.bodyApplyAnimation(anims.stand, 1)
         }
       }
 
       // Throw knife (Control.pas:714-745)
       if (
-        GUN_EQ /* Weapon.Num = Guns[KNIFE].Num */ &&
+        spriteC.weapon.num === guns[KNIFE].num &&
         spriteC.bodyAnimation.id === anims.throwWeapon.id &&
         (!spriteC.control.throwWeapon || spriteC.bodyAnimation.currFrame === 16)
       ) {
@@ -530,13 +548,20 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
           //   — DontDrop 세팅은 로컬 채택, 스냅샷은 네트워크라 미채택.
           spriteC.dontDrop = true
           b = spriteC.getCursorAimDirection()
-          // TODO(M2): Vec2Scale(PlayerVelocity, Velocity[Num], Guns[THROWNKNIFE].InheritedVelocity);
-          //   D := Min(Max(BodyAnimation.CurrFrame, 8), 16) / 16;
-          //   Vec2Scale(B, B, Guns[THROWNKNIFE].Speed * 1.5 * D); B := B + PlayerVelocity;
-          //   A := Skeleton.Pos[16];
-          //   CreateBullet(A, B, Guns[THROWNKNIFE].Num, Num, 255, Guns[THROWNKNIFE].HitMultiply,
-          //     True, False);
-          //   ApplyWeaponByNum(Guns[NOWEAPON].Num, 1)
+          // PlayerVelocity := Velocity * Guns[THROWNKNIFE].InheritedVelocity (Control.pas:728-745)
+          const playerVelocity = vec2Scale(
+            gs.spriteParts.velocity[num],
+            guns[THROWNKNIFE].inheritedVelocity,
+          )
+          const d = Math.min(Math.max(spriteC.bodyAnimation.currFrame, 8), 16) / 16
+          b = vec2Scale(b, guns[THROWNKNIFE].speed * 1.5 * d)
+          b = vec2Add(b, playerVelocity)
+          const a = cloneVec2(spriteC.skeleton.pos[16])
+          createBullet(
+            gs, a, b, guns[THROWNKNIFE].num, num, 255,
+            guns[THROWNKNIFE].hitMultiply, true, false,
+          )
+          spriteC.applyWeaponByNum(guns[NOWEAPON].num, 1)
           spriteC.bodyApplyAnimation(anims.stand, 1)
           // {$IFNDEF SERVER} ClientSpriteSnapshot — 미채택
         }
@@ -548,11 +573,16 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         if (
           spriteC.bodyAnimation.id === anims.punch.id &&
           spriteC.bodyAnimation.currFrame === 11 &&
-          GUN_NEQ /* <> Guns[LAW].Num */ &&
-          GUN_NEQ /* <> Guns[M79].Num */
+          spriteC.weapon.num !== guns[LAW].num &&
+          spriteC.weapon.num !== guns[M79].num
         ) {
-          // TODO(M2): A := Skeleton.Pos[16] + (2*Direction, 3); B := (Direction*0.1, 0);
-          //   CreateBullet(A, B, Weapon.Num, Num, 255, Weapon.HitMultiply, True, False)
+          // Control.pas:753-761
+          const a = vector2(
+            spriteC.skeleton.pos[16].x + 2 * spriteC.direction,
+            spriteC.skeleton.pos[16].y + 3,
+          )
+          const bp = vector2(spriteC.direction * 0.1, 0)
+          createBullet(gs, a, bp, spriteC.weapon.num, num, 255, spriteC.weapon.hitMultiply, true, false)
           // {$IFNDEF SERVER} KNIFE → PlaySound(SFX_SLASH) — TODO(M2/render)
           spriteC.bodyAnimation.currFrame++
         }
@@ -561,9 +591,13 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       // Buttstock!
       if (!spriteC.deadMeat) {
         if (spriteC.bodyAnimation.id === anims.melee.id && spriteC.bodyAnimation.currFrame === 12) {
-          // TODO(M2): A := Skeleton.Pos[16] + (2*Direction, 3); B := (Direction*0.1, 0);
-          //   CreateBullet(A, B, Guns[NOWEAPON].Num, Num, 255, Guns[NOWEAPON].HitMultiply,
-          //     True, True)
+          // Control.pas:766-777
+          const a = vector2(
+            spriteC.skeleton.pos[16].x + 2 * spriteC.direction,
+            spriteC.skeleton.pos[16].y + 3,
+          )
+          const bp = vector2(spriteC.direction * 0.1, 0)
+          createBullet(gs, a, bp, guns[NOWEAPON].num, num, 255, guns[NOWEAPON].hitMultiply, true, true)
           // {$IFNDEF SERVER} PlaySound(SFX_SLASH) — TODO(M2/render)
         }
       }
@@ -582,7 +616,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
 
       // M79 luska
       if (
-        GUN_EQ /* Weapon.Num = Guns[M79].Num */ &&
+        spriteC.weapon.num === guns[M79].num &&
         spriteC.weapon.reloadTimeCount === spriteC.weapon.clipOutTime
       ) {
         // {$IFNDEF SERVER} M79 탄피 스파크 CreateSpark 52 (811-820) — TODO(M2/render)
@@ -698,7 +732,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       }
 
       // Fondle Barrett?!
-      if (GUN_EQ /* Weapon.Num = Guns[BARRETT].Num */ && spriteC.weapon.fireIntervalCount > 0) {
+      if (spriteC.weapon.num === guns[BARRETT].num && spriteC.weapon.fireIntervalCount > 0) {
         if (
           spriteC.bodyAnimation.id === anims.stand.id ||
           spriteC.bodyAnimation.id === anims.crouch.id ||
@@ -850,7 +884,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         }
       } else if (spriteC.idleRandom === 4) {
         // TAKE OFF HELMET
-        if (GUN_NEQ /* <> Guns[BOW].Num */ && GUN_NEQ /* <> Guns[BOW2].Num */) {
+        if (spriteC.weapon.num !== guns[BOW].num && spriteC.weapon.num !== guns[BOW2].num) {
           if (spriteC.idleTime === 0) {
             if (spriteC.wearHelmet === 1) spriteC.bodyApplyAnimation(anims.takeOff, 1)
             if (spriteC.wearHelmet === 2) spriteC.bodyApplyAnimation(anims.takeOff, 10)
@@ -924,11 +958,19 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
         // SELFKILL
         if (spriteC.idleTime === 0) {
           if (spriteC.canMercy) {
-            // (Weapon.Num = Guns[M79/M249/SPAS12/LAW/CHAINSAW/BARRETT/MINIGUN].Num) → Mercy2
-            if (GUN_EQ || GUN_EQ || GUN_EQ || GUN_EQ || GUN_EQ || GUN_EQ || GUN_EQ) {
+            // Mercy2: M79/M249/SPAS12/LAW/CHAINSAW/BARRETT/MINIGUN (Control.pas:1289-1295)
+            if (
+              spriteC.weapon.num === guns[M79].num ||
+              spriteC.weapon.num === guns[M249].num ||
+              spriteC.weapon.num === guns[SPAS12].num ||
+              spriteC.weapon.num === guns[LAW].num ||
+              spriteC.weapon.num === guns[CHAINSAW].num ||
+              spriteC.weapon.num === guns[BARRETT].num ||
+              spriteC.weapon.num === guns[MINIGUN].num
+            ) {
               spriteC.bodyApplyAnimation(anims.mercy2, 1)
               spriteC.legsApplyAnimation(anims.mercy2, 1)
-            } else if (GUN_NEQ /* Weapon.Num <> Guns[MINIGUN].Num */) {
+            } else if (spriteC.weapon.num !== guns[MINIGUN].num) {
               spriteC.bodyApplyAnimation(anims.mercy, 1)
               spriteC.legsApplyAnimation(anims.mercy, 1)
             }
@@ -949,7 +991,7 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
           spriteC.bodyAnimation.id === anims.mercy2.id
         ) {
           if (spriteC.bodyAnimation.currFrame === 20) {
-            spriteC.fire() // TODO(M2) stub
+            spriteC.fire()
             // {$IFNDEF SERVER} 무기별 사운드 + ClientSendStringMessage('kill') (1330-1340)
             //   — 클라 전용, 미채택 (자살 판정은 M2 Fire/Die에서)
             spriteC.bodyAnimation.currFrame++
@@ -998,13 +1040,13 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
       // stat gun deactivate if needed (Control.pas:1390-1396)
       if (spriteC.control.up || spriteC.control.jetpack) {
         if (spriteC.stat > 0) {
-          // TODO(M2) Things: Thing[SpriteC.Stat].StaticType := False
+          gs.thing[spriteC.stat].staticType = false // Control.pas:1393
           spriteC.stat = 0
         }
       }
 
       /* ═══════════════ AimDistCoef — 바렛 스코프 (Control.pas:1398-1484) ═══════════════ */
-      if (GUN_EQ /* Weapon.Num = Guns[BARRETT].Num */) {
+      if (spriteC.weapon.num === guns[BARRETT].num) {
         if (
           spriteC.weapon.fireIntervalCount === 0 &&
           (spriteC.bodyAnimation.id === anims.prone.id || spriteC.bodyAnimation.id === anims.aim.id)
@@ -1478,8 +1520,9 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
               spriteC.legsApplyAnimation(anims.runBack, 1)
             }
           } else if (spriteC.holdedThing !== 0) {
-            // TODO(M2) Things: 낙하산 기울이기 — Thing[HoldedThing].Skeleton.Forces[3].Y -= 0.5;
-            //   Forces[2].Y += 0.5 (Control.pas:1927-1931)
+            // parachute bend (Control.pas:1927-1931)
+            gs.thing[spriteC.holdedThing].skeleton.forces[3].y -= 0.5
+            gs.thing[spriteC.holdedThing].skeleton.forces[2].y += 0.5
           }
 
           if (spriteC.onGround) {
@@ -1499,8 +1542,9 @@ export function controlSprite(gs: GameState, spriteC: TSprite): void {
               spriteC.legsApplyAnimation(anims.runBack, 1)
             }
           } else if (spriteC.holdedThing !== 0) {
-            // TODO(M2) Things: 낙하산 기울이기 — Thing[HoldedThing].Skeleton.Forces[2].Y -= 0.5;
-            //   Forces[3].Y += 0.5 (Control.pas:1954-1958)
+            // parachute bend (Control.pas:1954-1958)
+            gs.thing[spriteC.holdedThing].skeleton.forces[2].y -= 0.5
+            gs.thing[spriteC.holdedThing].skeleton.forces[3].y += 0.5
           }
 
           if (spriteC.onGround) {

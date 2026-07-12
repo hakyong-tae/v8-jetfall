@@ -10,8 +10,15 @@ import type { GameState } from '../core/state'
 import { vector2 } from '../core/vector'
 import { pascalRound } from '../core/pascal'
 import { createSprite, createTPlayer, TSprite, randomizeStart } from '../core/sprites'
-import { updateFrame, updateFrameN } from '../core/game'
-import { TEAM_ALPHA } from '../core/constants'
+import { updateFrame, updateFrameN, sortPlayers, changeMap, nextMap } from '../core/game'
+import {
+  TEAM_ALPHA,
+  TEAM_BRAVO,
+  DEFAULT_MAPCHANGE_TIME,
+  GAMESTYLE_DEATHMATCH,
+  GAMESTYLE_CTF,
+  OBJECT_ALPHA_FLAG,
+} from '../core/constants'
 
 // 스폰 위치(randomizeStart)와 이동 로직의 Random() 호출을 결정적으로 만들기 위해 Math.random을
 // 시드 LCG로 대체한다 (pascal.ts random()이 Math.random 기반).
@@ -214,5 +221,163 @@ describe('updateFrame — 60Hz tick (ServerLoop.pas) + TSprite.update (Sprites.p
       expect(Math.abs(gs.spriteParts.pos[spr.num].y)).toBeLessThanOrEqual(bound)
     }
     expect(gs.ticks).toBe(600)
+  })
+})
+
+// Task 10 시나리오 — 틱 오더(ServerLoop.pas) + DM/CTF 승리 판정 + ChangeMap 라운드 리셋.
+describe('updateFrame 틱 오더 + DM/CTF 룰 (ServerLoop.pas / Game.pas)', () => {
+  let gs: GameState
+
+  beforeEach(() => {
+    seedRandom(20260712)
+    gs = setupTestGame()
+    gs.mapChangeCounter = -60
+  })
+
+  afterEach(() => {
+    Math.random = realRandom
+  })
+
+  it('틱 오더: spriteEuler→spriteUpdate→bullet→bulletPartsEuler→spark→thing (ServerLoop 292-311 + 클라 76-82 스파크 삽입)', () => {
+    const spr = spawn(gs)
+    // 활성 슬롯 하나씩 켜서 각 단계가 발동하게 한다. update는 순서 기록용 스텁으로 교체
+    // (실제 로직은 여기선 불필요 — 호출 순서만 검증).
+    gs.bullet[1].active = true
+    gs.spark[1].active = true
+    gs.thing[1].active = true
+
+    const order: string[] = []
+    const rec = (label: string) => {
+      if (!order.includes(label)) order.push(label)
+    }
+
+    const origEuler = gs.spriteParts.doEulerTimeStepFor.bind(gs.spriteParts)
+    gs.spriteParts.doEulerTimeStepFor = (j: number) => {
+      rec('spriteEuler')
+      origEuler(j)
+    }
+    spr.update = () => rec('spriteUpdate')
+    gs.bullet[1].update = () => rec('bullet')
+    gs.bulletParts.doEulerTimeStep = () => rec('bulletPartsEuler')
+    gs.spark[1].update = () => rec('spark')
+    gs.thing[1].update = () => rec('thing')
+
+    updateFrame(gs)
+
+    expect(order).toEqual([
+      'spriteEuler',
+      'spriteUpdate',
+      'bullet',
+      'bulletPartsEuler',
+      'spark',
+      'thing',
+    ])
+    // ① OldSpritePos 시프트가 euler/update 앞에서 돌았는지: [0]이 스폰 위치를 담았다.
+    expect(gs.oldSpritePos[spr.num][0].x).toBeCloseTo(gs.spriteParts.pos[spr.num].x)
+  })
+
+  it('DM 킬리밋: kills>=svKilllimit 이면 sortPlayers가 mapChangeCounter를 무장 (Game.pas:793-810)', () => {
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    gs.mapChangeCounter = -60
+    const spr = spawn(gs)
+    spr.player!.kills = gs.svKilllimit // 10
+
+    expect(gs.mapChangeCounter).toBe(-60)
+    sortPlayers(gs)
+    expect(gs.mapChangeCounter).toBe(DEFAULT_MAPCHANGE_TIME) // nextMap 무장 (320)
+    expect(gs.timeLimitCounter).toBe(0)
+  })
+
+  it('DM 킬리밋 미달: kills<svKilllimit 이면 mapChangeCounter 그대로', () => {
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    gs.mapChangeCounter = -60
+    const spr = spawn(gs)
+    spr.player!.kills = gs.svKilllimit - 1
+
+    sortPlayers(gs)
+    expect(gs.mapChangeCounter).toBe(-60)
+  })
+
+  it('CTF 팀 승리: teamScore>=svKilllimit 이면 mapChangeCounter 무장 (Game.pas:872-883)', () => {
+    gs.svGamemode = GAMESTYLE_CTF // 팀전 → DM 킬리밋 분기 건너뜀
+    gs.mapChangeCounter = -60
+    gs.teamScore[1] = gs.svKilllimit
+
+    sortPlayers(gs)
+    expect(gs.mapChangeCounter).toBe(DEFAULT_MAPCHANGE_TIME)
+  })
+
+  it('sortPlayers 정렬: Flags>Kills>Deaths (Game.pas:813-847)', () => {
+    // 킬리밋을 크게 올려 승리 판정이 개입하지 않게 한다.
+    gs.svKilllimit = 999
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    const a = spawn(gs)
+    const b = spawn(gs)
+    const c = spawn(gs)
+    a.player!.kills = 5
+    a.player!.flags = 0
+    b.player!.kills = 2
+    b.player!.flags = 3 // 캡이 최우선 → 1등
+    c.player!.kills = 5
+    c.player!.deaths = 1
+    a.player!.deaths = 4 // 같은 kills면 deaths 적은 c가 위
+
+    sortPlayers(gs)
+    expect(gs.playersNum).toBe(3)
+    expect(gs.sortedPlayers[1].playerNum).toBe(b.num) // flags 3
+    expect(gs.sortedPlayers[2].playerNum).toBe(c.num) // kills 5, deaths 1
+    expect(gs.sortedPlayers[3].playerNum).toBe(a.num) // kills 5, deaths 4
+  })
+
+  it('changeMap 라운드 리셋: kills/deaths/flags/teamScore 0, 탄/씽 소거, CTF 깃발 재스폰, 카운터 리셋 (Game.pas:512-745)', () => {
+    gs.svGamemode = GAMESTYLE_CTF
+    const alpha = spawn(gs, TEAM_ALPHA)
+    const bravo = spawn(gs, TEAM_BRAVO)
+    alpha.player!.kills = 7
+    alpha.player!.deaths = 3
+    alpha.player!.flags = 2
+    gs.teamScore[1] = 5
+    gs.teamScore[2] = 4
+    gs.timeLimitCounter = 123
+
+    // 활성 탄/씽 하나씩 — 소거되는지 확인
+    gs.bullet[1].active = true
+    gs.thing[5].active = true
+    gs.thing[5].style = 99
+
+    changeMap(gs)
+
+    // 스탯 0
+    expect(alpha.player!.kills).toBe(0)
+    expect(alpha.player!.deaths).toBe(0)
+    expect(alpha.player!.flags).toBe(0)
+    expect(bravo.player!.kills).toBe(0)
+    // 팀 점수 0
+    expect(gs.teamScore[1]).toBe(0)
+    expect(gs.teamScore[2]).toBe(0)
+    // 탄 소거
+    expect(gs.bullet[1].active).toBe(false)
+    // CTF 깃발 재스폰 (ctf_Ash에 team 5/6 스폰 존재)
+    expect(gs.teamFlag[1]).toBeGreaterThan(0)
+    expect(gs.teamFlag[2]).toBeGreaterThan(0)
+    expect(gs.thing[gs.teamFlag[1]].active).toBe(true)
+    expect(gs.thing[gs.teamFlag[1]].style).toBe(OBJECT_ALPHA_FLAG)
+    // 카운터 리셋
+    expect(gs.mapChangeCounter).toBe(-60)
+    expect(gs.timeLimitCounter).toBe(gs.svTimelimit)
+  })
+
+  it('nextMap 축약: timeLimitCounter=0, mapChangeCounter 무장 → 카운트다운이 changeMap 발동', () => {
+    gs.svGamemode = GAMESTYLE_CTF
+    spawn(gs, TEAM_ALPHA)
+    nextMap(gs)
+    expect(gs.mapChangeCounter).toBe(DEFAULT_MAPCHANGE_TIME)
+    expect(gs.timeLimitCounter).toBe(0)
+
+    // 카운트다운을 돌려 changeMap이 발동하면 mapChangeCounter가 -60으로 안정되고 timeLimitCounter가
+    // svTimelimit으로 리셋된다 (리셋 후 몇 틱은 ⑪에서 다시 감소하므로 근사치로 확인).
+    updateFrameN(gs, DEFAULT_MAPCHANGE_TIME + 2)
+    expect(gs.mapChangeCounter).toBe(-60)
+    expect(gs.timeLimitCounter).toBeGreaterThan(gs.svTimelimit - 5)
   })
 })

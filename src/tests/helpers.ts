@@ -3,10 +3,12 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { createGameState, type GameState } from '../core/state'
+import { createGameState, loadThingObjects, type GameState } from '../core/state'
 import { loadAnimObjects } from '../core/anims'
 import { loadMapFile } from '../core/mapfile'
+import { loadWaypoints } from '../core/waypoints'
 import { loadSpriteObjects } from '../core/sprites'
+import { wireGameHooks } from '../core/game'
 
 const assetsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public/assets')
 
@@ -21,13 +23,28 @@ export function loadTestMap(gs: GameState, mapName = 'ctf_Ash.pms'): void {
   const buf = readFileSync(path.join(assetsDir, 'maps', mapName))
   const mapFile = loadMapFile(new Uint8Array(buf).buffer as ArrayBuffer)
   gs.map.loadData(mapFile)
+  // PolyMap.pas:236-255 — BotPath 브리지 (원본은 LoadData가 Game.pas 전역 BotPath를 직접 채움).
+  loadWaypoints(gs.botPath, mapFile.waypoints)
 }
 
-// GameState 풀 셋업: 애니메이션 44종 + SpriteParts/GostekSkeleton + ctf_Ash 맵.
-export function setupTestGame(): GameState {
+// 폴리곤 0개 맵 — PolyMap.initialize()가 이미 빈 섹터그리드를 깔아 두므로, 섹터 파라미터만
+// 실측 맵 수준으로 세팅하면 된다 (충돌 판정·OOB 경계가 모두 이 두 값에서 파생된다).
+// bound = sectorsNum*sectorsDivision-10 = 1590 — 탄환 감쇠 테스트(이동거리 ~960px)에 충분.
+export function loadEmptyMap(gs: GameState, sectorsDivision = 64, sectorsNum = 25): void {
+  gs.map.initialize()
+  gs.map.sectorsDivision = sectorsDivision
+  gs.map.sectorsNum = sectorsNum
+}
+
+// GameState 풀 셋업: 애니메이션 44종 + SpriteParts/GostekSkeleton + BulletParts/SparkParts/
+// 씽 스켈레톤 프로토타입 + ctf_Ash 맵 (emptyMap 옵션 시 폴리곤 0개 맵).
+export function setupTestGame(opts: { emptyMap?: boolean } = {}): GameState {
   const gs = createGameState()
+  wireGameHooks(gs) // gs.sortPlayers 훅 배선 (T10)
   gs.anims = loadAnimObjects(readAssetLines)
   loadSpriteObjects(gs, readAssetLines)
-  loadTestMap(gs)
+  loadThingObjects(gs, readAssetLines)
+  if (opts.emptyMap) loadEmptyMap(gs)
+  else loadTestMap(gs)
   return gs
 }

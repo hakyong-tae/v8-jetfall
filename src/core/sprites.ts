@@ -11,11 +11,12 @@
 //   CheckOutOfBounds(3399), CheckSkeletonOutOfBounds(3424), Respawn(3455-3775),
 //   ResetSpriteOldPos(3776), GetMoveacc(4813), GetCursorAimDirection/GetHandsAimDirection
 //   (4852-4875), 팀/솔로 판정 헬퍼(4876-4915), CanRespawn(4916-4922).
-// * Things.pas:620-663 RandomizeStart도 여기 포함 (스폰 위치 선택 — Respawn이 의존, Things.pas
-//   본체는 미포팅. things.ts가 생기면 그쪽으로 이동/재수출 예정).
+// * Things.pas:620-663 RandomizeStart는 M1에서 여기 임시 거처였다가 M2 Task 5에서 things.ts로
+//   이동 (파일 하단에서 re-export — 기존 import 경로 호환).
 // * Anims.pas LoadAnimObjects 끝부분(SpriteParts/GostekSkeleton 셋업) → loadSpriteObjects().
-// * TSprite.Update → Task 11. Fire/Die/Kill/HealthHit/DropWeapon/ThrowFlag/ThrowGrenade/
-//   ApplyWeaponByNum/Parachute/ChangeTeam → TODO(M2) 스텁 (시그니처만).
+// * TSprite.Update → M1 Task 11. Kill/Die/DropWeapon/ApplyWeaponByNum/HealthHit/Parachute/
+//   ChangeTeam → M2 Task 6에서 구현 완료. Fire/ThrowFlag/ThrowGrenade + Update 전투 블록 +
+//   Respawn/CreateSprite 무기 지급 → M2 Task 7에서 구현 완료.
 //
 // 빌드 기준: constants.ts와 동일하게 CLIENT 빌드. {$IFDEF SERVER} 전용 필드/라인은
 // `// TODO(M3) SERVER` 주석으로 포함하거나 표기, 클라 전용 사운드 채널 필드는 생략(주석).
@@ -44,15 +45,52 @@ import {
   vec2Length,
   vec2Normalize,
 } from './vector'
-import { trunc, random, pascalRound } from './pascal'
+import { trunc, random, randomFloat, pascalRound } from './pascal'
 import { pointLineDistance, distanceVec2 } from './calc'
 import { ParticleSystem, NUM_PARTICLES } from './parts'
+import {
+  type TGun,
+  emptyGun,
+  guns,
+  weaponNumToIndex,
+  weaponNameToNum,
+  calculateBink,
+  isSecondaryWeaponIndex,
+  NOWEAPON_NUM,
+  PRIMARY_WEAPONS,
+  SECONDARY_WEAPONS,
+  FRAGGRENADE,
+  COLT,
+  EAGLE,
+  MP5,
+  AK74,
+  STEYRAUG,
+  SPAS12,
+  RUGER77,
+  M79,
+  BARRETT,
+  M249,
+  MINIGUN,
+  KNIFE,
+  CHAINSAW,
+  LAW,
+  BOW,
+  BOW2,
+  FLAMER,
+  NOWEAPON,
+  BULLET_STYLE_FRAGNADE,
+  BULLET_STYLE_M79,
+  BULLET_STYLE_FLAME,
+  BULLET_STYLE_FLAMEARROW,
+  BULLET_STYLE_CLUSTER,
+  BULLET_STYLE_SHOTGUN,
+  BULLET_STYLE_KNIFE,
+} from './weapons'
 import { TAnimation, MAX_FRAMES_INDEX, MAX_POS_INDEX } from './anims'
 import {
   PolyMap,
   pointInPoly,
   MIN_SECTORZ,
-  MAX_SPAWNPOINTS,
   POLY_TYPE_DOESNT,
   POLY_TYPE_ONLY_BULLETS,
   POLY_TYPE_ONLY_FLAGGERS,
@@ -99,8 +137,66 @@ import {
   MAX_OLDPOS,
   CLIENTSTOPMOVE_RETRYS,
   PARA_SPEED,
+  PARA_DISTANCE,
+  DEFAULT_GOALTICKS,
+  MULTIKILLINTERVAL,
+  BRUTALDEATHHEALTH,
+  HEADCHOPDEATHHEALTH,
+  HELMETFALLHEALTH,
+  BONUS_BERSERKER,
+  BONUS_FLAMEGOD,
+  SURVIVAL_RESPAWNTIME,
+  GAMESTYLE_DEATHMATCH,
+  GAMESTYLE_POINTMATCH,
+  GAMESTYLE_TEAMMATCH,
+  GAMESTYLE_CTF,
+  GAMESTYLE_RAMBO,
+  GAMESTYLE_INF,
+  GAMESTYLE_HTF,
+  OBJECT_USSOCOM,
+  OBJECT_DESERT_EAGLE,
+  OBJECT_HK_MP5,
+  OBJECT_AK74,
+  OBJECT_STEYR_AUG,
+  OBJECT_SPAS12,
+  OBJECT_RUGER77,
+  OBJECT_M79,
+  OBJECT_BARRET_M82A1,
+  OBJECT_MINIMI,
+  OBJECT_MINIGUN,
+  OBJECT_COMBAT_KNIFE,
+  OBJECT_CHAINSAW,
+  OBJECT_LAW,
+  OBJECT_RAMBO_BOW,
+  OBJECT_PARACHUTE,
+  SFX_DEATH,
+  SFX_HEADCHOP,
+  SFX_BRYZG,
+  SFX_KILLBERSERK,
+  SFX_BURN,
+  SFX_AK74_FIRE,
+  SFX_M249_FIRE,
+  SFX_RUGER77_FIRE,
+  SFX_MP5_FIRE,
+  SFX_SPAS12_FIRE,
+  SFX_M79_FIRE,
+  SFX_DESERTEAGLE_FIRE,
+  SFX_STEYRAUG_FIRE,
+  SFX_BARRETM82_FIRE,
+  SFX_MINIGUN_FIRE,
+  SFX_COLT1911_FIRE,
+  SFX_BOW_FIRE,
+  SFX_FLAMER,
+  SFX_LAW,
+  SFX_GRENADE_PULLOUT,
+  SFX_GRENADE_THROW,
+  MAX_INACCURACY,
+  SECOND,
 } from './constants'
 import { controlSprite } from './control'
+import { randomizeStart, createThing } from './things'
+import { createSpark } from './sparks'
+import { createBullet, serverCreateBullet } from './bullets'
 import type { GameState } from './state'
 
 /* ****************************************************************************
@@ -162,11 +258,8 @@ export const POS_PRONE = 4
 // (anims.ts와 동일하게 로컬 정의 — Constants.SCALE과 별개, anims.ts 헤더 노트 참조).
 const ANIMS_SCALE = 3
 
-// TODO(M2): 총기 식별 자리표시자 — control.ts 헤더 규약과 동일. Weapons.pas Guns[] 미포팅이라
-// `Weapon.Num = Guns[X].Num` 꼴 비교는 GUN_EQ(false), `<>` 꼴은 GUN_NEQ(true)로 대체하고
-// 원본 조건을 인접 주석으로 보존한다 ("특수총이 아닌 일반 총 소지" 기본값).
-const GUN_EQ = false as boolean // Weapon.Num  =  Guns[X].Num
-const GUN_NEQ = true as boolean // Weapon.Num <> Guns[X].Num
+// 총기 식별: M1의 GUN_EQ/GUN_NEQ 자리표시자는 M2 Task 7에서 전부 실제
+// `weapon.num === guns[X].num` 비교로 교체·삭제되었다 (guns[]는 weapons.ts, T1).
 
 /* ****************************************************************************
  *                      TControl (Sprites.pas:69-73)                          *
@@ -245,64 +338,13 @@ function defaultBotData(): TBotData {
 }
 
 /* ****************************************************************************
- *          TGun stub (Weapons.pas:14-53 record — TODO(M2) weapons.ts)        *
+ *   TGun re-export (Weapons.pas:14-53 — 실제 정의는 weapons.ts, M2 Task 1)     *
  **************************************************************************** */
 
-// TODO(M2): Weapons.pas 포팅 시 weapons.ts로 이동. M1에서는 TSprite 필드 타입과
-// GetMoveacc(movementAcc)/Update(Task 11)가 컴파일되기 위한 구조만 제공 — 값은 모두 0
-// (Guns[] 배열/무기 대입 라인은 전부 TODO(M2) 스텁, 원본 라인은 주석으로 보존).
-export interface TGun {
-  ammo: number
-  ammoCount: number
-  num: number
-  movementAcc: number
-  bink: number
-  recoil: number
-  fireInterval: number
-  fireIntervalPrev: number
-  fireIntervalCount: number
-  fireIntervalReal: number
-  startUpTime: number
-  startUpTimeCount: number
-  reloadTime: number
-  reloadTimePrev: number
-  reloadTimeCount: number
-  reloadTimeReal: number
-  textureNum: number
-  clipTextureNum: number
-  clipReload: boolean
-  clipInTime: number
-  clipOutTime: number
-  name: string
-  iniName: string
-  speed: number
-  hitMultiply: number
-  bulletSpread: number
-  push: number
-  inheritedVelocity: number
-  modifierLegs: number
-  modifierChest: number
-  modifierHead: number
-  noCollision: number
-  fireMode: number
-  timeout: number
-  bulletStyle: number
-  fireStyle: number
-  bulletImageStyle: number
-}
-
-export function emptyGun(): TGun {
-  return {
-    ammo: 0, ammoCount: 0, num: 0, movementAcc: 0, bink: 0, recoil: 0,
-    fireInterval: 0, fireIntervalPrev: 0, fireIntervalCount: 0, fireIntervalReal: 0,
-    startUpTime: 0, startUpTimeCount: 0,
-    reloadTime: 0, reloadTimePrev: 0, reloadTimeCount: 0, reloadTimeReal: 0,
-    textureNum: 0, clipTextureNum: 0, clipReload: false, clipInTime: 0, clipOutTime: 0,
-    name: '', iniName: '', speed: 0, hitMultiply: 0, bulletSpread: 0, push: 0,
-    inheritedVelocity: 0, modifierLegs: 0, modifierChest: 0, modifierHead: 0,
-    noCollision: 0, fireMode: 0, timeout: 0, bulletStyle: 0, fireStyle: 0, bulletImageStyle: 0,
-  }
-}
+// M1 때 여기 있던 TGun 스텁(값은 전부 0)은 weapons.ts로 이관되었다. 기존 `from './sprites'`
+// import 경로 호환을 위해 재수출만 한다.
+export type { TGun }
+export { emptyGun }
 
 /* ****************************************************************************
  *        TPlayer — 최소 인터페이스 (Net.pas:252 TPlayer class 부분집합)      *
@@ -324,6 +366,9 @@ export interface TPlayer {
   camera: number
   kills: number
   deaths: number
+  // Net.pas TPlayer.Flags — CTF 캡처 스코어 (Things.pas:832/884가 증가, SortPlayers(T10)가
+  // 정렬 키로 사용). M2 T9에서 추가.
+  flags: number
   demoPlayer: boolean
 }
 
@@ -340,6 +385,7 @@ export function createTPlayer(): TPlayer {
     camera: 0,
     kills: 0,
     deaths: 0,
+    flags: 0,
     demoPlayer: false,
   }
 }
@@ -516,8 +562,10 @@ export class TSprite {
   autoReloadWhenCanFire = false
   canAutoReloadSpas = false
   bgState: TBackgroundState
-  // TODO(M3) SERVER: {$IFDEF SERVER} 전용 필드 — 봇/서버 로직이 붙을 때 사용.
-  hasPack = false // TODO(M3) SERVER
+  // {$IFDEF SERVER} 전용 필드 — 규약 8a: 이 심이 권위 서버이므로 게임플레이 필드는 채택.
+  // HasPack: 메디킷 재픽업 쿨다운 (Things.pas:1975/1979가 세팅, sv_healthcooldown 주기 해제는
+  // ServerLoop.pas:424-428 — T10 틱오더).
+  hasPack = false
   targetX = 0 // TODO(M3) SERVER
   targetY = 0 // TODO(M3) SERVER
   // {$ELSE} 클라 전용 사운드 채널 핸들(GattlingSoundChannel2/ReloadSoundChannel/
@@ -548,7 +596,7 @@ export class TSprite {
 
   // Sprites.pas:438-1422 TSprite.Update — 스프라이트 틱 갱신 (스켈레톤 물리/애니메이션 전진/
   // OnGround 판정/무기 타이머/사망체 시뮬레이션). 이동부 전체 번역; 클라 전용 사운드/스파크
-  // 라인은 주석 스텁, 무기 식별은 GUN_EQ/GUN_NEQ 규약 (파일 상단).
+  // 라인은 주석 스텁, 무기 식별은 실제 guns[] 비교 (M2 Task 7).
   update(): void {
     const gs = this.gs
     const num = this.num
@@ -582,13 +630,12 @@ export class TSprite {
     // reload spas after shooting delay is over
     if (
       this.autoReloadWhenCanFire &&
-      (GUN_NEQ /* Sprite[Num].Weapon.Num <> Guns[SPAS12].Num */ ||
-        this.weapon.fireIntervalCount === 0)
+      (this.weapon.num !== guns[SPAS12].num || this.weapon.fireIntervalCount === 0)
     ) {
       this.autoReloadWhenCanFire = false
 
       if (
-        GUN_EQ /* Sprite[Num].Weapon.Num = Guns[SPAS12].Num */ &&
+        this.weapon.num === guns[SPAS12].num &&
         this.bodyAnimation.id !== anims.roll.id &&
         this.bodyAnimation.id !== anims.rollBack.id &&
         this.bodyAnimation.id !== anims.change.id &&
@@ -943,7 +990,7 @@ export class TSprite {
           //   not PointVisible(...) 게이트 — 서버 변형은 게이트 없이 항상 수행
           if (
             this.weapon.fireIntervalCount > 0 &&
-            (this.weapon.ammoCount > 0 || GUN_EQ /* Weapon.Num = Guns[SPAS12].Num */)
+            (this.weapon.ammoCount > 0 || this.weapon.num === guns[SPAS12].num)
           ) {
             this.weapon.fireIntervalPrev = this.weapon.fireIntervalCount
             this.weapon.fireIntervalCount--
@@ -955,7 +1002,7 @@ export class TSprite {
           // reload
           if (
             this.weapon.ammoCount === 0 &&
-            (GUN_EQ /* Weapon.Num = Guns[CHAINSAW].Num */ ||
+            (this.weapon.num === guns[CHAINSAW].num ||
               (this.bodyAnimation.id !== anims.roll.id &&
                 this.bodyAnimation.id !== anims.rollBack.id &&
                 this.bodyAnimation.id !== anims.melee.id &&
@@ -968,13 +1015,13 @@ export class TSprite {
             if (this.bodyAnimation.id !== anims.getUp.id) {
               // spas is unique - it does the fire interval delay AND THEN reloads. all other
               // weapons do the opposite.
-              if (GUN_EQ /* Weapon.Num = Guns[SPAS12].Num */) {
+              if (this.weapon.num === guns[SPAS12].num) {
                 if (this.weapon.fireIntervalCount === 0 && this.canAutoReloadSpas) {
                   this.bodyApplyAnimation(anims.reload, 1)
                 }
               } else if (
-                GUN_EQ /* Weapon.Num = Guns[BOW].Num */ ||
-                GUN_EQ /* Weapon.Num = Guns[BOW2].Num */
+                this.weapon.num === guns[BOW].num ||
+                this.weapon.num === guns[BOW2].num
               ) {
                 this.bodyApplyAnimation(anims.reloadBow, 1)
               } else if (
@@ -984,7 +1031,7 @@ export class TSprite {
                 // Don't show reload animation for chainsaw if one of these animations are
                 // already ongoing
                 if (
-                  GUN_NEQ /* Weapon.Num <> Guns[CHAINSAW].Num */ ||
+                  this.weapon.num !== guns[CHAINSAW].num ||
                   (this.bodyAnimation.id !== anims.roll.id &&
                     this.bodyAnimation.id !== anims.rollBack.id &&
                     this.bodyAnimation.id !== anims.melee.id &&
@@ -1002,7 +1049,7 @@ export class TSprite {
             // {$IFNDEF SERVER} 무기별 장전 사운드 선택(PlaySound) + ClipOutTime 도달 시
             //   탄창 배출 CreateSpark 블록 (Sprites.pas:944-1004) — TODO(M2/render)
 
-            if (GUN_NEQ /* Weapon.Num <> Guns[SPAS12].Num */) {
+            if (this.weapon.num !== guns[SPAS12].num) {
               // Spas doesn't use the reload time.
               // If it ever does, be sure to put this back outside.
               this.weapon.reloadTimePrev = this.weapon.reloadTimeCount
@@ -1038,7 +1085,7 @@ export class TSprite {
               this.weapon.reloadTimeCount = this.weapon.reloadTime
             }
 
-            if (GUN_NEQ /* Weapon.Num <> Guns[SPAS12].Num */) {
+            if (this.weapon.num !== guns[SPAS12].num) {
               if (this.weapon.reloadTimeCount < 1) {
                 // {$IFDEF SERVER}
                 this.bodyApplyAnimation(anims.change, 36)
@@ -1111,8 +1158,7 @@ export class TSprite {
           // gain health from bow
           if (
             gs.mainTickCounter % 3 === 0 &&
-            (GUN_EQ /* Weapon.Num = Guns[BOW].Num */ ||
-              GUN_EQ) /* Weapon.Num = Guns[BOW2].Num */ &&
+            (this.weapon.num === guns[BOW].num || this.weapon.num === guns[BOW2].num) &&
             this.health < gs.startHealth /* STARTHEALTH */
           ) {
             this.health = this.health + 1
@@ -1124,7 +1170,7 @@ export class TSprite {
           // parachuter
           this.para = 0
           if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
-            // TODO(M2) Things: if Thing[HoldedThing].Style = OBJECT_PARACHUTE then Para := 1
+            if (gs.thing[this.holdedThing].style === OBJECT_PARACHUTE) this.para = 1
           }
 
           if (this.para === 1) {
@@ -1133,9 +1179,11 @@ export class TSprite {
             if (this.ceaseFireCounter < 1) {
               if (this.onGround || this.control.jetpack) {
                 if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
-                  // TODO(M2) Things: 낙하산 분리 — Thing[HoldedThing].HoldingSprite := 0;
-                  //   Dec(Thing[HoldedThing].Skeleton.ConstraintCount);
-                  //   Thing[HoldedThing].TimeOut := 3 * 60; HoldedThing := 0
+                  // 낙하산 분리 (Sprites.pas:1302-1308)
+                  gs.thing[this.holdedThing].holdingSprite = 0
+                  gs.thing[this.holdedThing].skeleton.constraintCount--
+                  gs.thing[this.holdedThing].timeOut = 3 * 60
+                  this.holdedThing = 0
                 }
               }
             }
@@ -1190,14 +1238,23 @@ export class TSprite {
                 for (let i = 1; i <= MAX_SPRITES; i++) {
                   if (gs.sprite[i].active && !gs.sprite[i].deadMeat) {
                     const p = vector2(0, 0) // P := Default(TVector2)
-                    gs.sprite[i].healthHit(4000, i, 1, -1, p) // TODO(M2) stub
+                    gs.sprite[i].healthHit(4000, i, 1, -1, p)
                     gs.sprite[i].player!.deaths--
                   }
                 }
               }
 
-              // TODO(M2) Things: HTF가 아닌 모드에서 TeamFlag[1/2]가 미귀환이면
-              //   Thing[TeamFlag[...]].Respawn (Sprites.pas:1380-1387)
+              // HTF가 아닌 모드에서 팀 깃발이 미귀환이면 재스폰 (Sprites.pas:1380-1387)
+              if (gs.svGamemode !== GAMESTYLE_HTF) {
+                if (gs.teamFlag[1] > 0 && gs.teamFlag[2] > 0) {
+                  if (!gs.thing[gs.teamFlag[1]].inBase) {
+                    gs.thing[gs.teamFlag[1]].respawn()
+                  }
+                  if (!gs.thing[gs.teamFlag[2]].inBase) {
+                    gs.thing[gs.teamFlag[2]].respawn()
+                  }
+                }
+              }
             }
           }
         }
@@ -1205,14 +1262,18 @@ export class TSprite {
         // parachuter
         this.para = 0
         if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
-          // TODO(M2) Things: if Thing[HoldedThing].Style = OBJECT_PARACHUTE then Para := 1
+          if (gs.thing[this.holdedThing].style === OBJECT_PARACHUTE) this.para = 1
         }
 
         if (this.para === 1) {
           this.skeleton.forces[12].y = 25 * PARA_SPEED
           if (this.onGround) {
             if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
-              // TODO(M2) Things: 낙하산 분리 (Sprites.pas:1403-1406)
+              // 낙하산 분리 (Sprites.pas:1401-1407)
+              gs.thing[this.holdedThing].holdingSprite = 0
+              gs.thing[this.holdedThing].skeleton.constraintCount--
+              gs.thing[this.holdedThing].timeOut = 3 * 60
+              this.holdedThing = 0
             }
           }
         }
@@ -1236,40 +1297,1570 @@ export class TSprite {
     }
   }
 
-  /* ─────────────────────────── stubs (다른 태스크) ─────────────────────────── */
+  /* ──────────────── combat 1부 (Sprites.pas:1424-2393, 3200-3376) — M2 Task 6 ─────────────── */
 
-  // TODO(M2): Sprites.pas TSprite.Kill
-  kill(): void {}
+  // Sprites.pas:1424-1490 TSprite.Kill — 스프라이트 슬롯 해제 (사망 연출이 아니라 퇴장/재생성용
+  // 비활성화). 운반 중 씽 해제 + 고정포 해제 + "팀 전멸 시 TeamScore 리셋" 포함.
+  kill(): void {
+    const gs = this.gs
+    const num = this.num
 
-  // TODO(M2): Sprites.pas TSprite.Die(How, Who, Where, What, Impact)
-  die(_how: number, _who: number, _where: number, _what: number, _impact: TVector2): void {}
+    this.active = false
+    this.muted = false // {$IFNDEF SERVER}
+    // {$IFNDEF SERVER} StopSound(Reload/Jets/Gattling×2 채널) — 클라 오디오, 생략 (규약 8c)
 
-  // TODO(M2): Sprites.pas TSprite.DropWeapon
-  dropWeapon(): number {
-    return 0
+    if (num > 0) {
+      gs.sprite[num].skeleton.destroy() // 원본 그대로 배열 경유 (Sprite[Num].Skeleton.Destroy)
+      gs.spriteParts.active[num] = false
+    }
+
+    if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
+      if (gs.thing[this.holdedThing].style < OBJECT_USSOCOM) {
+        gs.thing[this.holdedThing].holdingSprite = 0
+        this.holdedThing = 0
+      }
+    }
+
+    if (this.stat > 0) {
+      gs.thing[this.stat].staticType = false
+      this.stat = 0
+    }
+
+    if (this.isNotSolo()) {
+      let left = false
+      for (let i = 1; i <= MAX_PLAYERS; i++) {
+        if (gs.sprite[i].active && this.isInSameTeam(gs.sprite[i]) && i !== num) {
+          left = true
+        }
+      }
+
+      if (!left) {
+        // 원본 그대로: 점수 배열에 팀 상수 TEAM_NONE(=0)을 대입한다 — 의미상 "0점 리셋"이지만
+        // 타입이 어긋난 수상한 코드. "고치지 않고" 보존.
+        gs.teamScore[this.player!.team] = TEAM_NONE
+      }
+    }
+
+    // {$IFDEF SERVER} — 무응답 카운터 리셋만 채택, 채팅 플러드/핑 경고 카운터는 TODO(M3) NET
+    if (num > 0) {
+      gs.noClientUpdateTime[num] = 0
+      // MessagesASecNum[num]/FloodWarnings[num]/PingWarnings[num] := 0 — TODO(M3) NET
+    }
+
+    // sort the players frag list
+    gs.sortPlayers?.() // ServerHelper.pas SortPlayers — 표시 순서 정렬 훅 (T10 배선)
   }
 
-  // TODO(M2): Sprites.pas TSprite.ApplyWeaponByNum(WNum, Gun, Ammo, RestorePrimaryState)
-  applyWeaponByNum(_wNum: number, _gun: number, _ammo = -1, _restorePrimaryState = false): void {}
+  // Sprites.pas:1491-1545 SelectDefaultWeapons(MySprite) — 전신 {$IFNDEF SERVER}: 림보 메뉴에서
+  // 허용 무기가 1종뿐일 때 자동 선택하는 클라 UI 편의 루틴 (LimboMenu/ClientSpriteSnapshot).
+  // 규약 8(c): web 레이어 소관 — core 미포팅. (Task 지시서의 "selectDefaultWeapons" 항목 실측
+  // 결과 — TSprite 메서드가 아니라 클라 전용 자유 프로시저다.)
 
-  // TODO(M2): Sprites.pas TSprite.HealthHit(Amount, Who, Where, What, Impact) — 대미지/사망 판정.
-  // M1에서는 이동 코드의 분기 구조 보존을 위한 no-op.
-  healthHit(_amount: number, _who: number, _where: number, _what: number, _impact: TVector2): void {}
+  // Sprites.pas:1552-2318 TSprite.Die(How, Who, Where, What, Impact) — 사망 처리: 스코어링,
+  // 랙돌 본 절단, 사망 시 무기 드롭, 운반물 해제(리스크 지도 #6), 서바이벌 라운드 판정.
+  // 게임모드 스코어링 case(1644-1766) 중 DM(1648-1654)/CTF(1700-1711)는 완전 번역,
+  // PM/TM/RM/INF/HTF는 구조 + TODO(M2후속) 스텁 (계획서 Task 6).
+  die(how: number, who: number, where: number, what: number, impact: TVector2): void {
+    const gs = this.gs
+    const num = this.num
+    const player = this.player!
 
-  // TODO(M2): Sprites.pas TSprite.Parachute(a)
-  parachute(_a: TVector2): void {}
+    if (who < 1 || who > MAX_SPRITES) return
+    if (what > MAX_BULLETS) return
 
-  // TODO(M2): Sprites.pas TSprite.ChangeTeam(Team)
-  changeTeam(_team: number): void {}
+    if (!this.deadMeat) {
+      // bullet time
+      if (gs.svBullettime) {
+        if (gs.goalTicks === DEFAULT_GOALTICKS) {
+          let k = 0
+          for (let i = 1; i <= MAX_SPRITES; i++) {
+            if (
+              gs.sprite[i].active &&
+              i !== who &&
+              !gs.sprite[i].player!.demoPlayer &&
+              gs.sprite[i].isNotSpectator()
+            ) {
+              if (
+                distanceVec2(gs.spriteParts.pos[i], gs.spriteParts.pos[who]) >
+                BULLETTIME_MINDISTANCE
+              ) {
+                k = 1
+              }
+            }
+          }
 
-  // TODO(M2): Sprites.pas TSprite.Fire
-  fire(): void {}
+          if (k < 1) {
+            // Game.pas:263-277 ToggleBulletTime(True) 인라인 — BulletTimeTimer := 30;
+            // GOALTICKS := DEFAULT_GOALTICKS div 3. Number27Timing(프레임 페이싱)은 web 루프 소관.
+            gs.bulletTimeTimer = 30
+            gs.goalTicks = trunc(DEFAULT_GOALTICKS / 3)
+          }
+        }
+      }
 
-  // TODO(M2): Sprites.pas TSprite.ThrowFlag
-  throwFlag(): void {}
+      // {$IFDEF SERVER} 리스폰 카운터 — 권위 로컬 심 채택 (1594-1599)
+      if (
+        gs.svGamemode === GAMESTYLE_INF ||
+        gs.svGamemode === GAMESTYLE_TEAMMATCH ||
+        gs.svGamemode === GAMESTYLE_CTF ||
+        gs.svGamemode === GAMESTYLE_HTF
+      ) {
+        this.respawnCounter = gs.waveRespawnCounter + gs.svRespawntimeMinwave
+      } else {
+        this.respawnCounter = gs.svRespawntime
+      }
+      player.deaths++
 
-  // TODO(M2): Sprites.pas TSprite.ThrowGrenade
-  throwGrenade(): void {}
+      // {$IFDEF SERVER} ARROW/FLAMEARROW DontCheat 킥 (1603-1611) — KickPlayer 계열, TODO(M3) NET
+      // {$IFDEF SERVER} sv_punishtk Anti-Team-Killer (1613-1641) — TODO(M2후속): TKWarnings
+      //   필드 미포팅 (cvar 기본 False라 기본 게임플레이 무영향)
+
+      if (who !== num) {
+        if (gs.svGamemode === GAMESTYLE_DEATHMATCH) {
+          gs.sprite[who].player!.kills++
+
+          // mulitkill count — {$IFDEF SERVER} 채택 (규약 8a)
+          gs.sprite[who].multiKillTime = MULTIKILLINTERVAL
+          gs.sprite[who].multiKills++
+        }
+        if (gs.svGamemode === GAMESTYLE_POINTMATCH) {
+          // TODO(M2후속) PM 스코어링 (1656-1685): 킬 1점, PM 깃발 소지 시 ×2,
+          //   멀티킬 2/3/4/5/6+ → ×2/×4/×8/×16/×32, 멀티킬 카운트 갱신
+        }
+        if (gs.svGamemode === GAMESTYLE_TEAMMATCH) {
+          // TODO(M2후속) TM 스코어링 (1687-1699): 적팀 킬이면 Kills+1 + TeamScore[킬러팀]+1 + 멀티킬
+        }
+        if (gs.svGamemode === GAMESTYLE_CTF) {
+          if (this.isNotInSameTeam(gs.sprite[who])) {
+            gs.sprite[who].player!.kills++
+
+            // mulitkill count — {$IFDEF SERVER} 채택 (규약 8a)
+            gs.sprite[who].multiKillTime = MULTIKILLINTERVAL
+            gs.sprite[who].multiKills++
+          }
+        }
+        if (gs.svGamemode === GAMESTYLE_INF) {
+          // TODO(M2후속) INF 스코어링 (1713-1725): CTF와 동형 (적팀 킬 Kills+1 + 멀티킬)
+        }
+        if (gs.svGamemode === GAMESTYLE_HTF) {
+          // TODO(M2후속) HTF 스코어링 (1727-1739): CTF와 동형
+        }
+        if (gs.svGamemode === GAMESTYLE_RAMBO) {
+          // TODO(M2후속) RM 스코어링 (1741-1765): 활 관련 킬만 인정, 람보 존재 시 비람보 킬 감점
+        }
+      }
+
+      if (this.idleRandom === 7) {
+        if (this.weapon.num === guns[NOWEAPON].num) {
+          how = BRUTAL_DEATH
+        }
+      }
+
+      this.bodyAnimation.currFrame = 0
+
+      // 킬 로그 문자열 S 구성(1771-1806) + 클라 WepStats(1808-1817) + 서버 콘솔 echokills
+      // (1820-1827) + {$IFDEF SCRIPT} OnPlayerKill + 킬 로그 파일/봇 채팅(1836-1860) —
+      // 전부 콘솔/HUD 통계/네트 계열이라 생략 (규약 8b/8c).
+
+      // {$IFDEF SERVER} 사망 시 무기 드롭 (1862-1882) — 게임플레이, 채택 (규약 8a)
+      {
+        const k = this.weapon.hitMultiply
+
+        this.lastWeaponHM = this.weapon.hitMultiply
+        this.lastWeaponStyle = this.weapon.bulletStyle
+        this.lastWeaponSpeed = this.weapon.speed
+        this.lastWeaponFire = this.weapon.fireInterval
+        this.lastWeaponReload = this.weapon.reloadTime
+
+        const i = this.dropWeapon()
+        this.weapon.hitMultiply = k
+
+        // 원본 그대로: DropWeapon 끝에서 Weapon이 이미 NOWEAPON으로 교체된 뒤라 이 조건은
+        // i>0인 경우 항상 거짓(Weapon.Num=NOWEAPON) — 사실상 죽은 코드. "고치지 않고" 보존.
+        if (
+          i > 0 &&
+          this.weapon.num !== guns[FLAMER].num &&
+          this.weapon.num !== guns[NOWEAPON].num
+        ) {
+          gs.thing[i].skeleton.forces[2] = cloneVec2(impact)
+        }
+
+        this.freeControls()
+      }
+
+      // {$IFNDEF SERVER} ScreenCounter/CapScreen (1885-1895) — 클라 스크린샷 연출, 생략
+    }
+
+    // {$IFDEF SERVER} ShotDistance/ShotRicochet/ShotLife (1898-1910) — 서버 무기 통계 전역
+    //   (콘솔 출력 전용), 생략 (규약 8c)
+    // {$IFNDEF SERVER} RUGER 헤드샷 HEADCHOP_DEATH 승격 (1915-1918) — 클라 전용 연출 분기.
+    //   규약 13: 서버 값(승격 없음) 채택.
+
+    switch (how) {
+      case NORMAL_DEATH: {
+        // {$IFNDEF SERVER} 사망음 — 규약 11 훅
+        if (!this.deadMeat) {
+          gs.playSound(SFX_DEATH + random(3), gs.spriteParts.pos[num])
+        }
+        break
+      }
+
+      case HEADCHOP_DEATH: {
+        // {$IFNDEF SERVER}if DeadMeat then{$ENDIF} 게이트 — 서버는 무조건 절단 (규약 13)
+        if (where === 12) this.skeleton.constraints[20].active = false
+        if (where === 3) this.skeleton.constraints[2].active = false
+        if (where === 4) this.skeleton.constraints[4].active = false
+
+        // {$IFNDEF SERVER} BARRETT/RUGER 헤드샷 시체폭발 스파크·SFX_BOOMHEADSHOT(1934-1968)
+        //   — Randomize/RandomRange 기반 클라 연출, 생략 (web M4)
+
+        // siup leb! — {$IFNDEF SERVER}, 규약 11 훅
+        if (!this.deadMeat) {
+          gs.playSound(SFX_HEADCHOP, this.skeleton.pos[12])
+        }
+        break
+      }
+
+      case BRUTAL_DEATH: {
+        // {$IFNDEF SERVER}if DeadMeat then{$ENDIF} 게이트 — 서버는 무조건 절단 (규약 13)
+        this.skeleton.constraints[2].active = false
+        this.skeleton.constraints[4].active = false
+        this.skeleton.constraints[20].active = false
+        this.skeleton.constraints[21].active = false
+        this.skeleton.constraints[23].active = false
+
+        // play bryzg sound! — {$IFNDEF SERVER}, 규약 11 훅
+        gs.playSound(SFX_BRYZG, this.skeleton.pos[12])
+        break
+      }
+    }
+
+    // {$IFNDEF SERVER}if DeadMeat then{$ENDIF} 게이트 — 서버는 무조건 (규약 13)
+    if (gs.sprite[who].bonusStyle === BONUS_BERSERKER) {
+      this.skeleton.constraints[2].active = false
+      this.skeleton.constraints[4].active = false
+      this.skeleton.constraints[20].active = false
+      this.skeleton.constraints[21].active = false
+      this.skeleton.constraints[23].active = false
+
+      gs.playSound(SFX_KILLBERSERK, this.skeleton.pos[12]) // {$IFNDEF SERVER} — 규약 11 훅
+    }
+
+    // {$IFNDEF SERVER} FLAMER 킬 화상음 — 규약 11 훅
+    if (!this.deadMeat && what > 0) {
+      if (gs.bullet[what].ownerWeapon === guns[FLAMER].num) {
+        gs.playSound(SFX_BURN, this.skeleton.pos[12])
+      }
+    }
+
+    if (!this.deadMeat && this.hasCigar === 10) {
+      // {$IFNDEF SERVER} 시가 튕김 스파크 — 규약 12로 채택
+      createSpark(gs, this.skeleton.pos[12], cloneVec2(impact), 34, num, 245)
+      this.hasCigar = 0
+    }
+
+    // Survival Mode (2013-2159) — 라운드 종료 판정 (게임플레이, 채택; 콘솔 출력만 생략)
+    if (gs.svSurvivalmode) {
+      if (!this.deadMeat) {
+        if (gs.svGamemode === GAMESTYLE_DEATHMATCH || gs.svGamemode === GAMESTYLE_RAMBO) {
+          gs.aliveNum = 0
+
+          for (let i = 1; i <= MAX_SPRITES; i++) {
+            if (gs.sprite[i].active && !gs.sprite[i].deadMeat && gs.sprite[i].isNotSpectator()) {
+              gs.aliveNum++
+            }
+          }
+
+          gs.aliveNum--
+
+          if (gs.aliveNum < 2) {
+            for (let i = 1; i <= MAX_SPRITES; i++) {
+              if (gs.sprite[i].active) {
+                gs.sprite[i].respawnCounter = SURVIVAL_RESPAWNTIME
+              }
+            }
+
+            gs.survivalEndRound = true
+
+            // {$IFNDEF SERVER} 생존자 SFX_ROAR (2049-2059) — 클라 연출, 생략
+          }
+
+          // MainConsole 'Players left: N' (2062-2072) — 콘솔 출력 생략
+        }
+
+        if (
+          gs.svGamemode === GAMESTYLE_CTF ||
+          gs.svGamemode === GAMESTYLE_INF ||
+          gs.svGamemode === GAMESTYLE_HTF ||
+          gs.svGamemode === GAMESTYLE_TEAMMATCH
+        ) {
+          gs.teamAliveNum[1] = 0
+          gs.teamAliveNum[2] = 0
+          gs.teamAliveNum[3] = 0
+          gs.teamAliveNum[4] = 0
+
+          for (let i = 1; i <= MAX_SPRITES; i++) {
+            if (
+              gs.sprite[i].active &&
+              !gs.sprite[i].deadMeat &&
+              gs.sprite[i].player!.team === TEAM_ALPHA
+            ) {
+              gs.teamAliveNum[TEAM_ALPHA]++
+            }
+            if (
+              gs.sprite[i].active &&
+              !gs.sprite[i].deadMeat &&
+              gs.sprite[i].player!.team === TEAM_BRAVO
+            ) {
+              gs.teamAliveNum[TEAM_BRAVO]++
+            }
+            if (
+              gs.sprite[i].active &&
+              !gs.sprite[i].deadMeat &&
+              gs.sprite[i].player!.team === TEAM_CHARLIE
+            ) {
+              gs.teamAliveNum[TEAM_CHARLIE]++
+            }
+            if (
+              gs.sprite[i].active &&
+              !gs.sprite[i].deadMeat &&
+              gs.sprite[i].player!.team === TEAM_DELTA
+            ) {
+              gs.teamAliveNum[TEAM_DELTA]++
+            }
+          }
+
+          gs.teamAliveNum[player.team]--
+
+          gs.aliveNum =
+            gs.teamAliveNum[1] + gs.teamAliveNum[2] + gs.teamAliveNum[3] + gs.teamAliveNum[4]
+
+          if (
+            (gs.teamAliveNum[1] > 0 &&
+              gs.teamAliveNum[2] < 1 &&
+              gs.teamAliveNum[3] < 1 &&
+              gs.teamAliveNum[4] < 1) ||
+            (gs.teamAliveNum[2] > 0 &&
+              gs.teamAliveNum[1] < 1 &&
+              gs.teamAliveNum[3] < 1 &&
+              gs.teamAliveNum[4] < 1) ||
+            (gs.teamAliveNum[3] > 0 &&
+              gs.teamAliveNum[1] < 1 &&
+              gs.teamAliveNum[2] < 1 &&
+              gs.teamAliveNum[4] < 1) ||
+            (gs.teamAliveNum[4] > 0 &&
+              gs.teamAliveNum[1] < 1 &&
+              gs.teamAliveNum[2] < 1 &&
+              gs.teamAliveNum[3] < 1) ||
+            (gs.teamAliveNum[1] < 1 &&
+              gs.teamAliveNum[2] < 1 &&
+              gs.teamAliveNum[3] < 1 &&
+              gs.teamAliveNum[4] < 1)
+          ) {
+            for (let i = 1; i <= MAX_SPRITES; i++) {
+              if (gs.sprite[i].active) {
+                gs.sprite[i].respawnCounter = SURVIVAL_RESPAWNTIME
+              }
+            }
+
+            if (!gs.survivalEndRound) {
+              if (gs.svGamemode === GAMESTYLE_CTF) {
+                if (gs.teamAliveNum[1] > 0) gs.teamScore[1] += 1
+                if (gs.teamAliveNum[2] > 0) gs.teamScore[2] += 1
+              }
+            }
+            if (!gs.survivalEndRound) {
+              if (gs.svGamemode === GAMESTYLE_INF) {
+                if (gs.teamAliveNum[1] > 0) gs.teamScore[1] += gs.svInfRedaward
+
+                // penalty
+                if (gs.playersTeamNum[1] > gs.playersTeamNum[2]) {
+                  gs.teamScore[1] -= 5 * (gs.playersTeamNum[1] - gs.playersTeamNum[2])
+                }
+                if (gs.teamScore[1] < 0) gs.teamScore[1] = 0
+              }
+            }
+
+            gs.survivalEndRound = true
+
+            for (let i = 1; i <= MAX_SPRITES; i++) {
+              if (gs.sprite[i].active && !gs.sprite[i].deadMeat) {
+                gs.sprite[i].idleRandom = 5
+                gs.sprite[i].idleTime = 1
+              }
+            }
+          }
+
+          // {$IFNDEF SERVER} 'Players left on your team' 콘솔 (2149-2157) — 생략
+        }
+      }
+    }
+
+    // {$IFDEF SERVER} Fire on from bullet (2161-2184) — 게임플레이, 채택 (규약 8a)
+    if (what > 0) {
+      if (gs.bullet[what].style === BULLET_STYLE_FRAGNADE) {
+        if (random(12) === 0) this.onFire = 4
+      }
+
+      if (gs.bullet[what].style === BULLET_STYLE_M79) {
+        if (random(8) === 0) this.onFire = 2
+      }
+
+      if (gs.bullet[what].style === BULLET_STYLE_FLAME) {
+        this.onFire = 1
+      }
+
+      if (gs.bullet[what].style === BULLET_STYLE_FLAMEARROW) {
+        if (random(4) === 0) this.onFire = 1
+      }
+
+      if (gs.bullet[what].style === BULLET_STYLE_CLUSTER) {
+        if (random(3) === 0) this.onFire = 3
+      }
+    }
+
+    // ⚠ 리스크 지도 #6 — 깃발 drop-on-death의 실체가 이 루프다 (Die 2186-2225):
+    // 운반 중(HoldingSprite=Num)인 깃발류(Style < OBJECT_USSOCOM)를 사망 시 해제한다.
+    // (Things.pas에는 이 해제가 없다 — Die/Kill이 유일한 경로. Kill:1452-1456도 참조.)
+    for (let i = 1; i <= MAX_THINGS; i++) {
+      if (gs.thing[i].holdingSprite === num) {
+        if (gs.thing[i].style < OBJECT_USSOCOM) {
+          gs.thing[i].holdingSprite = 0
+          this.holdedThing = 0
+          // {$IFNDEF SERVER} '%s dropped the %s Flag' 콘솔/BigMessage/SFX_INFILT_POINT
+          //   (2193-2211) — 클라 메시지, 생략. {$IFDEF SCRIPT} OnFlagDrop — 생략.
+        }
+      }
+
+      if (gs.thing[i].owner === num) {
+        gs.thing[i].owner = 255
+      }
+
+      // 원본 그대로: Stat(고정포 씽 인덱스)과 Num(스프라이트 번호)의 비교가 씽 루프 안에 있고
+      // 첫 매치에서 Stat이 0이 되므로 사실상 i=1에서만 평가되는 수상한 코드 — 보존 (2221-2225).
+      if (this.stat === num) {
+        this.stat = 0
+        gs.thing[i].staticType = true
+      }
+    }
+
+    // send net info, so the death is smooth
+    // {$IFDEF SERVER} if not DeadMeat then ServerSpriteDeath(Num, Who, What, Where) — TODO(M3) NET
+    // {$IFNDEF SERVER} StopSound(ReloadSoundChannel) — 클라 오디오, 생략
+
+    // BREAD — 원본 그대로: 서버 분기는 `if not sv_advancemode.Value`(클라의 `if sv_advancemode`와
+    // 반전). 수상하지만 서버가 진실 (규약 8a) — 보존. 클라 쪽 추가 게이트
+    // ((Num<>Who) and (IsNotInSameTeam or IsSolo))는 {$IFNDEF SERVER}라 미채택.
+    if (!gs.svAdvancemode) {
+      if (!this.deadMeat && num !== who) {
+        let i = gs.svAdvancemodeAmount
+
+        if (gs.sprite[who].player!.kills % i === 0) {
+          let j = 0
+          // 원본은 루프 변수로 i를 재사용(파스칼 for가 i를 덮어씀) — 여기선 w로 분리 (동작 동일:
+          // 아래에서 i를 다시 sv_advancemode_amount로 재설정한다).
+          for (let w = 1; w <= PRIMARY_WEAPONS; w++) {
+            if (gs.weaponSel[who][w] === 0 && gs.weaponActive[w] === 1) {
+              j = 1
+            }
+          }
+
+          if (j === 1) {
+            do {
+              j = random(PRIMARY_WEAPONS) + 1
+            } while (!(gs.weaponSel[who][j] === 0 && gs.weaponActive[j] === 1))
+            gs.weaponSel[who][j] = 1
+          }
+        }
+
+        i = gs.svAdvancemodeAmount
+
+        if (player.deaths % i === 0) {
+          let j = 0
+          for (let w = 1; w <= PRIMARY_WEAPONS; w++) {
+            if (gs.weaponSel[num][w] === 1) {
+              j = 1
+            }
+          }
+
+          if (j === 1) {
+            do {
+              j = random(PRIMARY_WEAPONS) + 1
+            } while (gs.weaponSel[num][j] !== 1)
+            gs.weaponSel[num][j] = 0
+          }
+        }
+
+        // {$IFNDEF SERVER} LimboMenu 버튼 갱신 (2306-2311) — 클라 UI, 생략
+      }
+    }
+
+    this.deadMeat = true
+    // {$IFDEF SERVER} — 채택 (리스크 지도 #6의 나머지 반쪽: 서버는 사망 확정 시 HoldedThing도
+    // 무조건 해제한다, 2300-2302)
+    this.holdedThing = 0
+    this.alpha = 255
+    this.vest = 0
+    this.bonusStyle = BONUS_NONE
+    this.bonusTime = 0
+    if (this.deadTime > 0 && this.onFire === 0) {
+      this.deadTime = trunc(this.deadTime / 2) // DeadTime div 2
+    } else {
+      this.deadTime = 0
+    }
+
+    gs.spriteParts.velocity[num].x = 0
+    gs.spriteParts.velocity[num].y = 0
+    gs.sprite[who].brain.pissedOff = 0
+
+    // sort the players frag list
+    gs.sortPlayers?.() // ServerHelper.pas SortPlayers — T10 배선 훅
+  }
+
+  // Sprites.pas:2320-2393 TSprite.DropWeapon — 손 무기를 필드 Thing으로 변환. 본문 전체가
+  // {$IFDEF SERVER} (규약 8a 채택). 반환값 = 생성된 Thing 인덱스 (미생성 시 -1).
+  dropWeapon(): number {
+    const gs = this.gs
+    const num = this.num
+    let result = -1
+
+    gs.weaponsCleaned = false
+
+    // drop weapon
+    if (this.weapon.num === guns[COLT].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_USSOCOM, 255)
+    } else if (this.weapon.num === guns[EAGLE].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_DESERT_EAGLE, 255)
+    } else if (this.weapon.num === guns[MP5].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_HK_MP5, 255)
+    } else if (this.weapon.num === guns[AK74].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_AK74, 255)
+    } else if (this.weapon.num === guns[STEYRAUG].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_STEYR_AUG, 255)
+    } else if (this.weapon.num === guns[SPAS12].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_SPAS12, 255)
+    } else if (this.weapon.num === guns[RUGER77].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_RUGER77, 255)
+    } else if (this.weapon.num === guns[M79].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_M79, 255)
+    } else if (this.weapon.num === guns[BARRETT].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_BARRET_M82A1, 255)
+    } else if (this.weapon.num === guns[M249].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_MINIMI, 255)
+    } else if (this.weapon.num === guns[MINIGUN].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_MINIGUN, 255)
+    } else if (this.weapon.num === guns[KNIFE].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_COMBAT_KNIFE, 255)
+    } else if (this.weapon.num === guns[CHAINSAW].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_CHAINSAW, 255)
+    } else if (this.weapon.num === guns[LAW].num) {
+      result = createThing(gs, this.skeleton.pos[16], num, OBJECT_LAW, 255)
+    }
+
+    if (gs.svGamemode === GAMESTYLE_RAMBO) {
+      if (this.weapon.num === guns[BOW].num || this.weapon.num === guns[BOW2].num) {
+        result = createThing(gs, this.skeleton.pos[16], num, OBJECT_RAMBO_BOW, 255)
+        // {$IFNDEF SERVER} GameThingTarget := Result — 클라 봇 유도 전역, 생략
+      }
+    }
+
+    if (result > 0) {
+      gs.thing[result].ammoCount = this.weapon.ammoCount
+    }
+
+    // {$IFDEF SCRIPT} OnWeaponChange/ForceWeaponCalled (2378-2390) — 스크립팅 없음, 생략
+    this.applyWeaponByNum(guns[NOWEAPON].num, 1)
+
+    return result
+  }
+
+  // Sprites.pas:3200-3248 TSprite.ApplyWeaponByNum(WNum, Gun, Ammo, RestorePrimaryState) —
+  // guns[] 항목을 슬롯(1=Weapon, 2=SecondaryWeapon)에 record 깊은복사 (규약 3).
+  applyWeaponByNum(wNum: number, gun: number, ammo = -1, restorePrimaryState = false): void {
+    // {$IFDEF SERVER} Player.KnifeWarnings 감소 — 나이프 스팸 경고(서버 안티치트), TODO(M3) NET
+
+    if (restorePrimaryState && gun === 2) {
+      this.secondaryWeapon = { ...this.weapon } // SecondaryWeapon := Weapon (record 복사)
+    } else {
+      const weaponIndex = weaponNumToIndex(wNum) // 리스크 지도 #7: 인덱스≠Num, 반드시 변환 경유
+      if (gun === 1) {
+        this.weapon = { ...guns[weaponIndex] }
+      } else {
+        this.secondaryWeapon = { ...guns[weaponIndex] }
+      }
+    }
+
+    if (ammo > -1) {
+      // 원본 그대로: Gun=2여도 Weapon.AmmoCount에 적용된다 (3224-3225) — 보존.
+      this.weapon.ammoCount = ammo
+    }
+
+    // {$IFNDEF SERVER} Weapon.StartUpTimeCount := Weapon.StartUpTime — 클라 전용 리셋.
+    //   규약 13: 서버 값(리셋 없음 — Fire 경로가 관리) 채택.
+    // {$IFDEF SERVER} if Weapon.Num = Guns[KNIFE].Num then KnifeCan[Num] := True — TODO(M3) SERVER
+
+    if (wNum !== guns[NOWEAPON].num) {
+      this.lastWeaponHM = this.weapon.hitMultiply
+      this.lastWeaponStyle = this.weapon.bulletStyle
+      this.lastWeaponSpeed = this.weapon.speed
+      this.lastWeaponFire = this.weapon.fireInterval
+      this.lastWeaponReload = this.weapon.reloadTime
+    }
+  }
+
+  // Sprites.pas:3250-3376 TSprite.HealthHit(Amount, Who, Where, What, Impact) — 대미지 적용과
+  // 사망 문턱 판정 (NORMAL/HEADCHOP/BRUTAL 3단).
+  healthHit(amount: number, who: number, where: number, what: number, impact: TVector2): void {
+    const gs = this.gs
+    const num = this.num
+
+    // Friendly Fire
+    if (
+      !gs.svFriendlyfire &&
+      this.isNotSolo() &&
+      this.isInSameTeam(gs.sprite[who]) &&
+      num !== who
+    ) {
+      return
+    }
+
+    // {$IFDEF SERVER} 관전자(인간)의 공격 무시 — 채택 (규약 8a)
+    if (gs.sprite[who].isSpectator() && gs.sprite[who].player!.controlMethod === HUMAN) {
+      return
+    }
+
+    if (this.bonusStyle === BONUS_FLAMEGOD) return
+
+    // no health hit if someone is rambo
+    if (gs.svGamemode === GAMESTYLE_RAMBO) {
+      if (num !== who) {
+        for (let j = 1; j <= MAX_PLAYERS; j++) {
+          if (gs.sprite[j].active && who !== j && num !== j) {
+            if (
+              gs.sprite[j].weapon.num === guns[BOW].num ||
+              gs.sprite[j].weapon.num === guns[BOW2].num
+            ) {
+              return
+            }
+          }
+        }
+      }
+    }
+
+    let hm = amount
+
+    if (this.vest > 0) {
+      hm = pascalRound(0.33 * amount)
+      this.vest = this.vest - hm
+      hm = pascalRound(0.25 * amount)
+    }
+
+    // {$IFNDEF SERVER} and (Who <> Num) 추가 게이트 — 규약 13: 서버 값(자해도 4배) 채택.
+    if (gs.sprite[who].bonusStyle === BONUS_BERSERKER) {
+      hm = 4 * amount
+    }
+
+    // {$IFDEF SCRIPT} OnPlayerDamage — 스크립팅 없음, 생략
+
+    this.health = this.health - hm
+
+    // {$IFNDEF SERVER} WepStats Hits 집계 (3311-3335) — 클라 HUD 통계, 생략 (규약 8c)
+
+    // helmet fall off
+    if (
+      this.health < HELMETFALLHEALTH &&
+      this.wearHelmet === 1 &&
+      where === 12 &&
+      this.weapon.num !== guns[BOW].num &&
+      this.weapon.num !== guns[BOW2].num &&
+      this.player!.headCap > 0
+    ) {
+      this.wearHelmet = 0
+      // {$IFNDEF SERVER} 헬멧 스파크 — 규약 12로 채택 + 사운드는 규약 11 훅
+      createSpark(gs, this.skeleton.pos[12], gs.spriteParts.velocity[num], 6, num, 198)
+      gs.playSound(SFX_HEADCHOP, this.skeleton.pos[where])
+    }
+
+    // safety precautions
+    if (this.health < BRUTALDEATHHEALTH - 1) this.health = BRUTALDEATHHEALTH
+    if (this.health > gs.startHealth) this.health = gs.startHealth // STARTHEALTH (Game.pas:85 변수)
+
+    // death!
+    const t = cloneVec2(impact) // T := Impact (record 복사)
+    if (this.health < 1 && this.health > HEADCHOPDEATHHEALTH) {
+      this.die(NORMAL_DEATH, who, where, what, t)
+    } else if (this.health < HEADCHOPDEATHHEALTH + 1 && this.health > BRUTALDEATHHEALTH) {
+      this.die(HEADCHOP_DEATH, who, where, what, t)
+    } else if (this.health < BRUTALDEATHHEALTH + 1) {
+      this.die(BRUTAL_DEATH, who, where, what, t)
+    }
+
+    this.brain.targetNum = who
+
+    // {$IFDEF SERVER} bots_chat 저체력 채팅 (HURT_HEALTH, 3369-3376) — TODO(M3) NET
+  }
+
+  // Sprites.pas:3785-3821 TSprite.Parachute(a) — 발밑 레이캐스트 후 여유가 충분하면 낙하산
+  // Thing을 생성해 붙인다. (Respawn:3714가 호출)
+  parachute(a: TVector2): void {
+    const gs = this.gs
+    const num = this.num
+    a = cloneVec2(a) // Pascal 값 전달 — 아래에서 a.y를 수정하므로 호출자 벡터 별칭 차단 (규약 3)
+
+    if (this.holdedThing > 0) return
+    if (this.isSpectator()) return
+
+    for (let i = 1; i <= MAX_THINGS; i++) {
+      if (gs.thing[i].holdingSprite === num) {
+        gs.thing[i].holdingSprite = 0
+        gs.thing[i].kill()
+      }
+    }
+
+    const b = cloneVec2(a)
+    b.y = b.y + PARA_DISTANCE
+    const ray = gs.map.rayCast(
+      a,
+      b,
+      PARA_DISTANCE + 50,
+      true, // Player
+      false, // Flag
+      false, // Bullet
+      false, // CheckCollider
+      this.player!.team,
+    )
+    if (!ray.hit) {
+      if (ray.distance > PARA_DISTANCE - 10) {
+        a.y = a.y + 70
+        const n = createThing(gs, a, num, OBJECT_PARACHUTE, 255)
+        gs.thing[n].holdingSprite = num
+        // {$IFNDEF SERVER} Thing[n].Color := Player.ShirtColor — 렌더 색상, 생략
+        this.holdedThing = n
+      }
+    }
+  }
+
+  // Sprites.pas:3823-3972 TSprite.ChangeTeam(Team) — {$IFDEF SERVER}의 AdminChange/JoinType
+  // 네트 인자는 생략 (계획서 Task 6: "네트 인자 생략"). AdminChange=False(일반 변경) 경로 채택.
+  changeTeam(team: number): void {
+    const gs = this.gs
+
+    if (team > TEAM_SPECTATOR) return
+
+    if (this.active) {
+      const player = this.player!
+
+      // {$IFDEF SERVER} 팀 인원 집계 (3841-3846) — 채택
+      const teamsCount: number[] = new Array(TEAM_SPECTATOR + 1).fill(0)
+      for (let i = 1; i <= MAX_SPRITES; i++) {
+        if (gs.sprite[i].active && gs.sprite[i].isNotSpectator()) {
+          teamsCount[gs.sprite[i].player!.team]++
+        }
+      }
+
+      // Check for uneven teams — {$IFDEF SERVER}, AdminChange=False (3848-3862)
+      if (gs.svBalanceteams) {
+        if (this.isSpectator() && team === findLowestTeam(gs, teamsCount)) {
+          // 원본의 빈 then 절 — 관전자가 최소 인원 팀으로 가는 것은 항상 허용
+        } else if (teamsCount[team] >= teamsCount[player.team] && team < TEAM_SPECTATOR) {
+          // WriteConsole '<team> team is full' — 콘솔 출력 생략
+          return
+        }
+      }
+
+      if (teamsCount[TEAM_SPECTATOR] >= gs.svMaxspectators && team === TEAM_SPECTATOR) {
+        // WriteConsole 'Spectators are full' — 콘솔 출력 생략
+        return
+      }
+
+      if (
+        gs.svGamemode !== GAMESTYLE_TEAMMATCH &&
+        (team === TEAM_CHARLIE || team === TEAM_DELTA)
+      ) {
+        return
+      }
+
+      // {$IFDEF SCRIPT} OnBeforeJoinTeam — 스크립팅 없음, 생략
+
+      this.dropWeapon()
+
+      player.team = team
+      // Player.ApplyShirtColorFromTeam — 셔츠 색(렌더 전용, TPlayer 색상 필드 미포팅) — web 소관
+      const a = vector2(0, 0)
+      const b = vector2(0, 0)
+      this.num = createSprite(gs, a, b, 1, this.num, player, this.isPlayerObjectOwner)
+      const num = this.num
+
+      if (gs.sprite[num].holdedThing > 0) {
+        if (gs.thing[gs.sprite[num].holdedThing].style < OBJECT_USSOCOM) {
+          gs.thing[gs.sprite[num].holdedThing].respawn()
+          gs.sprite[num].holdedThing = 0
+        }
+      }
+
+      for (let i = 1; i <= MAX_THINGS; i++) {
+        if (gs.thing[i].holdingSprite === num) {
+          gs.thing[i].respawn()
+        }
+      }
+      gs.sprite[num].respawn()
+
+      // {$IFDEF SERVER} BulletTime[Num]/GrenadeTime[Num] := MainTickCounter-10;
+      //   KnifeCan[Num] := True — TODO(M3) SERVER 전역.
+      //   ServerSendNewPlayerInfo(Num, JoinType) — TODO(M3) NET.
+      gs.sortPlayers?.()
+
+      // MainConsole '<name> has joined <team>' (3919-3945) — 콘솔 출력 생략
+
+      // prevent players from joining alive midround in survival mode
+      if (gs.svSurvivalmode && player.team !== TEAM_SPECTATOR) {
+        // TODO: Fix this shouldn't change wepstats (원본 주석 보존)
+        gs.sprite[num].healthHit(4000, num, 1, 1, a)
+        gs.sprite[num].player!.deaths--
+      }
+
+      // {$IFNDEF SERVER} MySprite 카메라/LimboMenu (3956-3966) — 클라 UI, 생략
+      // {$IFDEF SERVER} MapChangeCounter 진행 중이면 ServerMapChange(Num) — TODO(M3) NET
+      // {$IFDEF SCRIPT} OnJoinTeam — 생략
+    }
+  }
+
+  /* ────────── fire / throwFlag / throwGrenade (Sprites.pas:3974-4812) — M2 Task 7 ────────── */
+
+  // Sprites.pas:3974-4597 TSprite.Fire — 발사: 조준 벡터 + bink/moveacc/스프레드 부정확도 →
+  // createBullet, 무기별 특수 처리(이글 2연발/샷건 산탄/미니건·샷건 반동/화염·톱 근접 스폰/
+  // LAW 자세 게이트/Mercy 자살탄), 탄피·총구연기 스파크(규약 12), 발사음(규약 11 훅), 자기 bink.
+  // 클라 전용 코스메틱 중 카메라 셰이크(4548-4570, 규약 11)와 리코일 커서 변조(4573-4596,
+  // CalculateRecoil — T4/T8 판정과 동일하게 웹 M4 소관)는 생략 + 주석.
+  fire(): void {
+    const gs = this.gs
+    const num = this.num
+    const anims = gs.anims
+
+    let bn = 0
+    let inaccuracy = 0
+
+    // Create a normalized directional vector
+    let aimDirection: TVector2
+    if (
+      this.weapon.bulletStyle === BULLET_STYLE_KNIFE ||
+      this.bodyAnimation.id === anims.mercy.id ||
+      this.bodyAnimation.id === anims.mercy2.id
+    ) {
+      aimDirection = this.getHandsAimDirection()
+    } else {
+      aimDirection = this.getCursorAimDirection()
+    }
+
+    let b = cloneVec2(aimDirection)
+
+    let a = vector2(this.skeleton.pos[15].x - b.x * 4, this.skeleton.pos[15].y - b.y * 4 - 2)
+
+    // TODO(skoskav): Make bink and self-bink sprite-specific so bots can also use it (원본 주석)
+    // {$IFNDEF SERVER} if Num = MySprite — 모든 인간 스프라이트가 로컬 (state.ts
+    // hitSprayCounter 필드 주석 참조).
+    if (this.player!.controlMethod === HUMAN) {
+      // Bink & self-bink
+      if (gs.hitSprayCounter > 0) {
+        inaccuracy = inaccuracy + gs.hitSprayCounter * 0.01
+      }
+    }
+
+    // Moveacc
+    inaccuracy = inaccuracy + this.getMoveacc()
+
+    // Bullet spread
+    if (
+      this.weapon.num !== guns[EAGLE].num &&
+      this.weapon.num !== guns[SPAS12].num &&
+      this.weapon.bulletStyle !== BULLET_STYLE_SHOTGUN
+    ) {
+      if (this.weapon.bulletSpread > 0) {
+        if (
+          this.legsAnimation.id === anims.proneMove.id ||
+          (this.legsAnimation.id === anims.prone.id && this.legsAnimation.currFrame > 23)
+        ) {
+          inaccuracy = inaccuracy + this.weapon.bulletSpread / 1.625
+        } else if (
+          this.legsAnimation.id === anims.crouchRun.id ||
+          this.legsAnimation.id === anims.crouchRunBack.id ||
+          (this.legsAnimation.id === anims.crouch.id && this.legsAnimation.currFrame > 13)
+        ) {
+          inaccuracy = inaccuracy + this.weapon.bulletSpread / 1.3
+        } else {
+          inaccuracy = inaccuracy + this.weapon.bulletSpread
+        }
+      }
+    }
+
+    // FIXME(skoskav): Inaccuracy decreased due to altered way of acquiring the directional
+    // vector. This should be solved more elegantly. (원본 주석 보존)
+    inaccuracy = inaccuracy * 0.25
+
+    if (inaccuracy > MAX_INACCURACY) inaccuracy = MAX_INACCURACY
+
+    // Calculate the maximum bullet deviation between 0 and MAX_INACCURACY.
+    // The scaling is modeled after Sin(x) where x = 0 -> Pi/2 to gracefully reach
+    // the maximum. Then multiply by a float between -1.0 and 1.0.
+    const maxDeviation = MAX_INACCURACY * Math.sin((inaccuracy / MAX_INACCURACY) * (Math.PI / 2))
+    const d = vector2(
+      (randomFloat() * 2 - 1) * maxDeviation,
+      (randomFloat() * 2 - 1) * maxDeviation,
+    )
+
+    // Add inaccuracies to directional vector and re-normalize
+    b = vec2Normalize(vec2Add(b, d))
+
+    // Multiply with the weapon speed
+    b = vec2Scale(b, this.weapon.speed)
+
+    // Add some of the player's velocity to the bullet
+    const m = vec2Scale(gs.spriteParts.velocity[num], this.weapon.inheritedVelocity)
+    b = vec2Add(b, m)
+
+    // Check for immediate collision (could just be head in polygon), if so then
+    // offset the bullet origin downward slightly
+    if (gs.map.collisionTest(a).hit) {
+      a.y = a.y + 2.5
+    }
+
+    if (
+      (this.weapon.num !== guns[EAGLE].num &&
+        this.weapon.num !== guns[SPAS12].num &&
+        this.weapon.num !== guns[FLAMER].num &&
+        this.weapon.num !== guns[NOWEAPON].num &&
+        this.weapon.num !== guns[KNIFE].num &&
+        this.weapon.num !== guns[CHAINSAW].num &&
+        this.weapon.num !== guns[LAW].num) ||
+      this.bodyAnimation.id === anims.mercy.id ||
+      this.bodyAnimation.id === anims.mercy2.id
+    ) {
+      bn = createBullet(gs, a, b, this.weapon.num, num, 255, this.weapon.hitMultiply, true, false)
+    }
+
+    if (this.weapon.num === guns[EAGLE].num) {
+      // Eagles
+      this.bulletCount = (this.bulletCount + 1) & 0xffff // Inc(BulletCount) — Word 랩
+      // RandSeed := BulletCount — 전역 RNG 시드(네트 동기용 결정적 산탄 패턴). 이 포트는
+      // 시드 없는 random을 채택한다 (스펙 4.2: 분포 일치면 충분 — 리스크 지도 #8).
+
+      d.x = b.x + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+      d.y = b.y + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+
+      bn = createBullet(
+        gs, a, d, this.weapon.num, num, 255, this.weapon.hitMultiply, true, false,
+        this.bulletCount,
+      )
+
+      d.x = b.x + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+      d.y = b.y + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+
+      const bNorm = vec2Normalize(b)
+      a.x = a.x - Math.sign(b.x) * Math.abs(bNorm.y) * 3.0
+      a.y = a.y + Math.sign(b.y) * Math.abs(bNorm.x) * 3.0
+
+      createBullet(gs, a, d, this.weapon.num, num, 255, this.weapon.hitMultiply, false, false)
+    }
+
+    if (this.weapon.bulletStyle === BULLET_STYLE_SHOTGUN) {
+      // Shotgun
+      this.bulletCount = (this.bulletCount + 1) & 0xffff
+      // RandSeed := BulletCount — 상동 (시드 생략)
+
+      d.x = b.x + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+      d.y = b.y + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+
+      bn = createBullet(
+        gs, a, d, this.weapon.num, num, 255, this.weapon.hitMultiply, true, false,
+        this.bulletCount,
+      )
+
+      for (let i = 0; i <= 4; i++) {
+        // Remaining 5 pellets
+        d.x = b.x + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+        d.y = b.y + (randomFloat() * 2 - 1) * this.weapon.bulletSpread
+        createBullet(gs, a, d, this.weapon.num, num, 255, this.weapon.hitMultiply, false, false)
+      }
+
+      d.x = b.x * 0.0412
+      d.y = b.y * 0.041
+      gs.spriteParts.velocity[num] = vec2Subtract(gs.spriteParts.velocity[num], d)
+    }
+
+    if (this.weapon.num === guns[MINIGUN].num) {
+      // Minigun
+      if (this.control.jetpack && this.jetsCount > 0) {
+        d.x = b.x * 0.0012
+        d.y = b.y * 0.0009
+      } else {
+        d.x = b.x * 0.0082
+        d.y = b.y * 0.0078
+      }
+
+      if (this.holdedThing > 0) {
+        d.x = d.x * 0.5
+        d.y = d.y * 0.7
+      }
+      d.x = d.x * 0.6
+
+      gs.spriteParts.velocity[num] = vec2Subtract(gs.spriteParts.velocity[num], d)
+    }
+
+    if (this.weapon.num === guns[FLAMER].num) {
+      // Flamer
+      a.x = a.x + b.x * 2
+      a.y = a.y + b.y * 2
+      bn = createBullet(gs, a, b, this.weapon.num, num, 255, this.weapon.hitMultiply, true, false)
+      // {$IFNDEF SERVER} PlaySound(SFX_FLAMER, ..., GattlingSoundChannel) — 규약 11 훅
+      gs.playSound(SFX_FLAMER, gs.spriteParts.pos[num])
+    }
+
+    if (this.weapon.num === guns[CHAINSAW].num) {
+      // Chainsaw
+      a.x = a.x + b.x * 2
+      a.y = a.y + b.y * 2
+      bn = createBullet(gs, a, b, this.weapon.num, num, 255, this.weapon.hitMultiply, true, false)
+    }
+
+    if (this.weapon.num === guns[LAW].num) {
+      // LAW — 웅크림/엎드림+접지 자세에서만 발사, 아니면 전체 중단 (4211-4225)
+      if (
+        (this.onGround || this.onGroundPermanent || this.onGroundForLaw) &&
+        ((this.legsAnimation.id === anims.crouch.id && this.legsAnimation.currFrame > 13) ||
+          this.legsAnimation.id === anims.crouchRun.id ||
+          this.legsAnimation.id === anims.crouchRunBack.id ||
+          (this.legsAnimation.id === anims.prone.id && this.legsAnimation.currFrame > 23))
+      ) {
+        bn = createBullet(gs, a, b, this.weapon.num, num, 255, this.weapon.hitMultiply, true, false)
+      } else {
+        return // Exit
+      }
+    }
+
+    // Mercy animation — 자살탄: 스폰 즉시 Hit 처리 후 자기 몸에 명중 판정 (4203-4223)
+    if (this.bodyAnimation.id === anims.mercy.id || this.bodyAnimation.id === anims.mercy2.id) {
+      if (bn > 0 && bn < MAX_BULLETS + 1) {
+        if (gs.bullet[bn].active) {
+          a = cloneVec2(gs.bulletParts.velocity[bn])
+          gs.bulletParts.velocity[bn] = vec2Scale(
+            vec2Normalize(gs.bulletParts.velocity[bn]),
+            70,
+          )
+          gs.bullet[bn].hit(2)
+          gs.bullet[bn].hit(9)
+          // couple more - not sure why (원본 주석 보존)
+          gs.bullet[bn].hit(2)
+          gs.bullet[bn].hit(9)
+          gs.bullet[bn].hit(2)
+          gs.bullet[bn].hit(9)
+          gs.bullet[bn].hitBody = gs.bullet[bn].owner
+          gs.bulletParts.velocity[bn] = a
+        }
+      }
+    }
+
+    // Shouldn't we dec on server too? (원본 주석 보존)
+    // {$IFNDEF SERVER} — 원본 서버는 클라의 ClientSendBullet 수신 시 차감
+    // (NetworkServerBullet.pas:46). 이 로컬 심에선 Fire가 유일한 발사 경로라 채택.
+    if (this.weapon.ammoCount > 0) {
+      this.weapon.ammoCount--
+    }
+
+    if (this.weapon.num === guns[SPAS12].num) {
+      this.canAutoReloadSpas = false
+    }
+
+    this.weapon.fireIntervalPrev = this.weapon.fireInterval
+    this.weapon.fireIntervalCount = this.weapon.fireInterval
+
+    this.fired = this.weapon.fireStyle
+
+    // {$IFNDEF SERVER} Spent bullet shell vectors — 탄피 스파크는 규약 12 채택
+    const c = vector2(
+      gs.spriteParts.velocity[num].x + this.direction * aimDirection.y * (randomFloat() * 0.5 + 0.8),
+      gs.spriteParts.velocity[num].y - this.direction * aimDirection.x * (randomFloat() * 0.5 + 0.8),
+    )
+    a.x = this.skeleton.pos[15].x + 2 - this.direction * 0.015 * b.x
+    a.y = this.skeleton.pos[15].y - 2 - this.direction * 0.015 * b.y
+
+    // Col := Map.CollisionTest(a, b) — b는 var 인자: 명중 시 perp 벡터로 덮인다 (미스면 유지)
+    const colTest = gs.map.collisionTest(a)
+    const col = colTest.hit
+    if (col) b = cloneVec2(colTest.perpVec)
+
+    // if r_maxsparks.Value < (MAX_SPARKS - 10) then if Random(2) = 0 then Col := True —
+    // r_maxsparks는 상수 MAX_SPARKS 고정(sparks.ts 헤더)이라 조건 상시 거짓 → 생략.
+
+    // play fire sound (+ 리코일 애니메이션, 탄피 스파크) — 무기별 (4256-4520)
+    if (this.weapon.num === guns[AK74].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_AK74_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+      if (!col) createSpark(gs, a, c, 68, num, 255) // shell
+    }
+    if (this.weapon.num === guns[M249].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_M249_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+      if (!col) createSpark(gs, a, c, 72, num, 255) // shell
+    }
+    if (this.weapon.num === guns[RUGER77].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_RUGER77_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.recoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+      if (!col) createSpark(gs, a, c, 70, num, 255) // shell
+    }
+    if (this.weapon.num === guns[MP5].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_MP5_FIRE, gs.spriteParts.pos[num])
+      a.x = this.skeleton.pos[15].x + 2 - 0.2 * b.x
+      a.y = this.skeleton.pos[15].y - 2 - 0.2 * b.y
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+      if (!col) createSpark(gs, a, c, 67, num, 255) // shell
+    }
+    if (this.weapon.num === guns[SPAS12].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_SPAS12_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position !== POS_PRONE &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.shotgun, 1)
+      }
+
+      // make sure firing interrupts reloading when prone
+      if (this.position === POS_PRONE && this.bodyAnimation.id === anims.reload.id) {
+        this.bodyAnimation.currFrame = this.bodyAnimation.numFrames
+      }
+    }
+    if (this.weapon.num === guns[M79].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_M79_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position !== POS_PRONE &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+    }
+    if (this.weapon.num === guns[EAGLE].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) {
+        gs.playSound(SFX_DESERTEAGLE_FIRE, gs.spriteParts.pos[num])
+      }
+      a.x = this.skeleton.pos[15].x + 3 - 0.17 * b.x
+      a.y = this.skeleton.pos[15].y - 2 - 0.15 * b.y
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+      if (!col) createSpark(gs, a, c, 66, num, 255) // shell
+      if (!col) {
+        a.x = this.skeleton.pos[15].x - 3 - 0.25 * b.x
+        a.y = this.skeleton.pos[15].y - 3 - 0.3 * b.y
+        c.x =
+          gs.spriteParts.velocity[num].x +
+          this.direction * aimDirection.y * (randomFloat() * 0.5 + 0.8)
+        c.y =
+          gs.spriteParts.velocity[num].y -
+          this.direction * aimDirection.x * (randomFloat() * 0.5 + 0.8)
+        createSpark(gs, a, c, 66, num, 255) // shell
+      }
+    }
+    if (this.weapon.num === guns[STEYRAUG].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_STEYRAUG_FIRE, gs.spriteParts.pos[num])
+      if (!col) createSpark(gs, a, c, 69, num, 255) // shell
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+    }
+    if (this.weapon.num === guns[BARRETT].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) {
+        gs.playSound(SFX_BARRETM82_FIRE, gs.spriteParts.pos[num])
+      }
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.barret, 1)
+      }
+      if (!col) createSpark(gs, a, c, 71, num, 255) // shell
+    }
+    if (this.weapon.num === guns[MINIGUN].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_MINIGUN_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 2)
+      }
+      if (!col) createSpark(gs, a, c, 73, num, 255) // shell
+    }
+    if (this.weapon.num === guns[COLT].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_COLT1911_FIRE, gs.spriteParts.pos[num])
+      a.x = this.skeleton.pos[15].x + 2 - 0.2 * b.x
+      a.y = this.skeleton.pos[15].y - 2 - 0.2 * b.y
+      if (!col) createSpark(gs, a, c, 65, num, 255) // shell
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+    }
+    if (this.weapon.num === guns[BOW].num || this.weapon.num === guns[BOW2].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_BOW_FIRE, gs.spriteParts.pos[num])
+      if (
+        this.bodyAnimation.id !== anims.throw.id &&
+        this.position === POS_STAND &&
+        this.bodyAnimation.id !== anims.getUp.id &&
+        this.bodyAnimation.id !== anims.melee.id
+      ) {
+        this.bodyApplyAnimation(anims.smallRecoil, 1)
+      }
+      if (this.position === POS_CROUCH) {
+        if (this.bodyAnimation.id === anims.handsUpAim.id) {
+          this.bodyApplyAnimation(anims.handsUpRecoil, 1)
+        } else {
+          this.bodyApplyAnimation(anims.aimRecoil, 1)
+        }
+      }
+    }
+    // {$IFNDEF SERVER} (4522-4534)
+    if (this.weapon.num === guns[LAW].num) {
+      if (this.bonusStyle !== BONUS_PREDATOR) gs.playSound(SFX_LAW, gs.spriteParts.pos[num])
+    }
+
+    // smoke from muzzle — 규약 12 채택
+    let muzzleSmokeVector = vec2Scale(b, 0.5)
+    a = vec2Add(a, muzzleSmokeVector)
+    muzzleSmokeVector = vec2Scale(muzzleSmokeVector, 0.2)
+    createSpark(gs, a, muzzleSmokeVector, 35, num, 10)
+
+    if (this.burstCount < 255) this.burstCount++
+
+    // TODO(skoskav): Make bink and self-bink sprite-specific so bots can also use it (원본 주석)
+    // {$IFNDEF SERVER} if Num = MySprite — 자기 bink 누적 (fire 상단 게이트와 동일 논리)
+    if (this.player!.controlMethod === HUMAN) {
+      // Increase self-bink for next shot
+      if (this.weapon.bink < 0) {
+        if (
+          this.legsAnimation.id === anims.crouch.id ||
+          this.legsAnimation.id === anims.crouchRun.id ||
+          this.legsAnimation.id === anims.crouchRunBack.id ||
+          this.legsAnimation.id === anims.prone.id ||
+          this.legsAnimation.id === anims.proneMove.id
+        ) {
+          gs.hitSprayCounter = calculateBink(gs.hitSprayCounter, pascalRound(-this.weapon.bink / 2))
+        } else {
+          gs.hitSprayCounter = calculateBink(gs.hitSprayCounter, -this.weapon.bink)
+        }
+      }
+    }
+
+    // {$IFNDEF SERVER} Screen shake (4548-4570) — CameraX/Y 변조는 규약 11대로 core에서 생략
+    //   (web에서 M4 폴리시).
+    // {$IFNDEF SERVER} Recoil! (4573-4596) — CalculateRecoil 커서 변조는 클라 시각 피드백,
+    //   T4/T8 판정과 동일하게 생략 + 주석 (웹 M4).
+  }
+
+  // Sprites.pas:4599-4696 TSprite.ThrowFlag — 운반 중 깃발 투척: 커서 방향 × FLAGTHROW_POWER,
+  // 다음 프레임 충돌 예측(레이캐스트 3점 + 충돌 4점)이 전부 비어 있어야 던진다.
+  throwFlag(): void {
+    const gs = this.gs
+    const num = this.num
+    const anims = gs.anims
+
+    if (this.bodyAnimation.id !== anims.roll.id && this.bodyAnimation.id !== anims.rollBack.id) {
+      if (this.control.flagThrow) {
+        if (this.holdedThing > 0) {
+          for (let i = 1; i <= MAX_THINGS; i++) {
+            if (gs.thing[i].holdingSprite === num) {
+              if (gs.thing[i].style < 4) {
+                // Create start velocity vector
+                let cursorDirection = this.getCursorAimDirection()
+                cursorDirection = vec2Scale(cursorDirection, FLAGTHROW_POWER)
+
+                // FIXME: Offset it away from the player so it isn't instantly re-grabbed,
+                // it makes it look like lag though (원본 주석 보존)
+                const bOffset = vec2Scale(cursorDirection, 5)
+
+                // Add velocity
+                const b = vec2Add(cursorDirection, gs.spriteParts.velocity[num])
+
+                // Don't throw if the flag would collide in the upcoming frame
+                const newPosDiff = vec2Add(bOffset, b)
+                let lookPoint1 = vec2Add(gs.thing[i].skeleton.pos[1], newPosDiff)
+
+                const futurePoint1 = vec2Add(lookPoint1, vector2(-10, -8))
+                const futurePoint2 = vec2Add(lookPoint1, vector2(10, -8))
+                const futurePoint3 = vec2Add(lookPoint1, vector2(-10, 8))
+                const futurePoint4 = vec2Add(lookPoint1, vector2(10, 8))
+
+                lookPoint1 = vec2Add(gs.thing[i].skeleton.pos[2], newPosDiff)
+                const lookPoint2 = vec2Add(gs.thing[i].skeleton.pos[3], newPosDiff)
+                const lookPoint3 = vec2Add(gs.thing[i].skeleton.pos[4], newPosDiff)
+
+                if (
+                  !gs.map.rayCast(this.skeleton.pos[15], lookPoint1, 200, false, true, false).hit &&
+                  !gs.map.rayCast(this.skeleton.pos[15], lookPoint2, 200, false, true, false).hit &&
+                  !gs.map.rayCast(this.skeleton.pos[15], lookPoint3, 200, false, true, false).hit &&
+                  !gs.map.collisionTest(futurePoint1, true).hit &&
+                  !gs.map.collisionTest(futurePoint2, true).hit &&
+                  !gs.map.collisionTest(futurePoint3, true).hit &&
+                  !gs.map.collisionTest(futurePoint4, true).hit
+                ) {
+                  for (let j = 1; j <= 4; j++) {
+                    // Apply offset from flagger
+                    gs.thing[i].skeleton.pos[j] = vec2Add(gs.thing[i].skeleton.pos[j], bOffset)
+
+                    // Apply velocities
+                    gs.thing[i].skeleton.pos[j] = vec2Add(gs.thing[i].skeleton.pos[j], b)
+                    gs.thing[i].skeleton.oldPos[j] = vec2Subtract(gs.thing[i].skeleton.pos[j], b)
+                  }
+
+                  // Add some spin for visual effect
+                  let bPerp = vector2(-b.y, b.x)
+                  bPerp = vec2Normalize(bPerp)
+                  bPerp = vec2Scale(bPerp, this.direction)
+                  gs.thing[i].skeleton.pos[1] = vec2Subtract(gs.thing[i].skeleton.pos[1], bPerp)
+                  gs.thing[i].skeleton.pos[2] = vec2Add(gs.thing[i].skeleton.pos[2], bPerp)
+
+                  // Release the flag
+                  gs.thing[i].holdingSprite = 0
+                  this.holdedThing = 0
+                  this.flagGrabCooldown = Math.trunc(SECOND / 4) // SECOND div 4
+
+                  // {$IFDEF SCRIPT} OnFlagDrop — 스크립팅 없음, 생략.
+
+                  gs.thing[i].bgState.backgroundStatus = BACKGROUND_TRANSITION
+                  gs.thing[i].bgState.backgroundPoly = BACKGROUND_POLY_UNKNOWN
+
+                  gs.thing[i].staticType = false
+                  // TODO(M3) NET: ServerThingMustSnapshot(i)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Sprites.pas:4698-4812 TSprite.ThrowGrenade — 수류탄 투척: Throw 애니메이션 진행에 따라
+  // 홀드 시간(CurrFrame)이 곧 투척 강도. 아크 보정 + FRAGGRENADE 속도/관성.
+  throwGrenade(): void {
+    const gs = this.gs
+    const num = this.num
+    const anims = gs.anims
+
+    // Start throw animation
+    if (!this.control.throwNade) {
+      this.grenadeCanThrow = true
+    }
+
+    if (
+      this.grenadeCanThrow &&
+      this.control.throwNade &&
+      this.bodyAnimation.id !== anims.roll.id &&
+      this.bodyAnimation.id !== anims.rollBack.id
+    ) {
+      this.bodyApplyAnimation(anims.throw, 1)
+      // {$IFNDEF SERVER} SetSoundPaused(ReloadSoundChannel, True) — 클라 오디오, 생략 (규약 8c)
+    }
+
+    // {$IFNDEF SERVER} Pull pin — 핀 뽑기 스파크(규약 12) + 사운드(규약 11 훅) (4720-4743)
+    if (
+      this.bodyAnimation.id === anims.throw.id &&
+      this.bodyAnimation.currFrame === 15 &&
+      this.tertiaryWeapon.ammoCount > 0 &&
+      this.ceaseFireCounter < 0
+    ) {
+      let b = this.getHandsAimDirection()
+      b = vec2Scale(b, this.bodyAnimation.currFrame / guns[FRAGGRENADE].speed)
+      if (this.bodyAnimation.currFrame < 24) {
+        b = vec2Scale(b, 0.65)
+      }
+      b = vec2Add(b, gs.spriteParts.velocity[num])
+      const a = vector2(
+        this.skeleton.pos[15].x + b.x * 3,
+        this.skeleton.pos[15].y - 2 + b.y * 3,
+      )
+      if (!gs.map.collisionTest(a).hit) {
+        b = this.getHandsAimDirection()
+        b.x = b.x * 0.5
+        b.y = b.y + 0.4
+        createSpark(gs, a, b, 30, num, 255) // Pin
+        gs.playSound(SFX_GRENADE_PULLOUT, a)
+      }
+    }
+
+    if (
+      this.bodyAnimation.id === anims.throw.id &&
+      (!this.control.throwNade || this.bodyAnimation.currFrame === 36)
+    ) {
+      // Grenade throw
+      if (
+        this.bodyAnimation.currFrame > 14 &&
+        this.bodyAnimation.currFrame < 37 &&
+        this.tertiaryWeapon.ammoCount > 0 &&
+        this.ceaseFireCounter < 0
+      ) {
+        let b = this.getCursorAimDirection()
+
+        // Add a few degrees of arc to the throw. The arc approaches zero as you aim up or down
+        const grenadeArcSize = (Math.sign(b.x) / 8) * (1 - Math.abs(b.y))
+        const grenadeArcX = Math.sin((b.y * Math.PI) / 2) * grenadeArcSize
+        const grenadeArcY = Math.sin((b.x * Math.PI) / 2) * grenadeArcSize
+        b.x = b.x + grenadeArcX
+        b.y = b.y - grenadeArcY
+        b = vec2Normalize(b)
+
+        b = vec2Scale(b, this.bodyAnimation.currFrame / guns[FRAGGRENADE].speed)
+        if (this.bodyAnimation.currFrame < 24) {
+          b = vec2Scale(b, 0.65)
+        }
+
+        const playerVelocity = vec2Scale(
+          gs.spriteParts.velocity[num],
+          guns[FRAGGRENADE].inheritedVelocity,
+        )
+
+        b = vec2Add(b, playerVelocity)
+        const a = vector2(
+          this.skeleton.pos[15].x + b.x * 3,
+          this.skeleton.pos[15].y - 2 + b.y * 3,
+        )
+        const e = vector2(gs.spriteParts.pos[num].x, gs.spriteParts.pos[num].y - 12)
+        if (
+          !gs.map.collisionTest(a).hit &&
+          !gs.map.rayCast(e, a, 50, false, false, true, false, this.player!.team).hit
+        ) {
+          createBullet(
+            gs, a, b, this.tertiaryWeapon.num, num, 255,
+            guns[FRAGGRENADE].hitMultiply, true, false,
+          )
+          // if {$IFNDEF SERVER}((ControlMethod = HUMAN) and (Num = MySprite)) or{$ENDIF}
+          //    (ControlMethod = BOT) — 모든 인간이 로컬이므로 HUMAN도 항상 참 (헤더 예외 논리)
+          if (this.player!.controlMethod === HUMAN || this.player!.controlMethod === BOT) {
+            this.tertiaryWeapon.ammoCount--
+          }
+
+          // {$IFNDEF SERVER} if Num = MySprite — bink (fire()와 동일 게이트 논리)
+          if (this.player!.controlMethod === HUMAN && guns[FRAGGRENADE].bink < 0) {
+            gs.hitSprayCounter = calculateBink(gs.hitSprayCounter, -guns[FRAGGRENADE].bink)
+          }
+
+          gs.playSound(SFX_GRENADE_THROW, a)
+        }
+      }
+
+      if (this.control.throwNade) {
+        this.grenadeCanThrow = false
+      }
+
+      if (this.weapon.ammoCount === 0) {
+        if (this.weapon.reloadTimeCount > this.weapon.clipOutTime) {
+          this.bodyApplyAnimation(anims.clipOut, 1)
+        }
+        if (this.weapon.reloadTimeCount < this.weapon.clipOutTime) {
+          this.bodyApplyAnimation(anims.clipIn, 1)
+        }
+        if (this.weapon.reloadTimeCount < this.weapon.clipInTime && this.weapon.reloadTimeCount > 0) {
+          this.bodyApplyAnimation(anims.slideBack, 1)
+        }
+        // {$IFNDEF SERVER} SetSoundPaused(ReloadSoundChannel, False) — 클라 오디오, 생략
+      }
+    }
+  }
 
   /* ──────────────────── animation apply (Sprites.pas:2395-2434) ─────────────────── */
 
@@ -1466,7 +3057,6 @@ export class TSprite {
               // Hit ground — realistic mode 낙하 대미지
               if (gs.svRealisticmode) {
                 if (gs.spriteParts.velocity[num].y > 3.5 && polyType !== POLY_TYPE_BOUNCY) {
-                  // TODO(M2): HealthHit 구현 전까지 no-op 스텁 호출 (분기 구조 보존)
                   this.healthHit(gs.spriteParts.velocity[num].y * 5, num, 12, -1, sPos)
                   // {$IFNDEF SERVER} PlaySound(SFX_FALL) — TODO(M2/render)
                 }
@@ -1728,7 +3318,7 @@ export class TSprite {
 
     switch (polyType) {
       case POLY_TYPE_DEADLY: {
-        // {$IFDEF SERVER} — 권위 로컬 심이므로 채택. TODO(M2): HealthHit 구현 전까지 no-op.
+        // {$IFDEF SERVER} — 권위 로컬 심이므로 채택.
         this.healthHit(50 + this.health, num, 12, -1, gs.spriteParts.velocity[num])
         break
       }
@@ -1748,7 +3338,7 @@ export class TSprite {
           }
           // {$IFDEF SERVER}
           if (this.health < 1) {
-            this.healthHit(10, num, 12, -1, gs.spriteParts.velocity[num]) // TODO(M2) stub
+            this.healthHit(10, num, 12, -1, gs.spriteParts.velocity[num])
           }
         }
 
@@ -1757,12 +3347,16 @@ export class TSprite {
           if (polyType === POLY_TYPE_LAVA) {
             const a = cloneVec2(pos)
             a.y = a.y - 3.0
-            // {$IFNDEF SERVER} CreateSpark(A, (0,-1.3), 36, Num, 40) — TODO(M2/render)
+            // {$IFNDEF SERVER} CreateSpark(A, (0,-1.3), 36, Num, 40) — 규약 12 채택
+            createSpark(gs, a, vector2(0, -1.3), 36, num, 40)
 
             if (random(3) === 0) {
-              // TODO(M2): B := -Velocity; CreateBullet(A, B, Guns[FLAMER].Num, Num, 255,
-              //   Guns[FLAMER].HitMultiply, False, True) — Bullets.pas 포팅 시.
-              void a
+              // 용암 불꽃 탄환 (Sprites.pas:3068-3075)
+              const b = vector2(
+                -gs.spriteParts.velocity[num].x,
+                -gs.spriteParts.velocity[num].y,
+              )
+              createBullet(gs, a, b, guns[FLAMER].num, num, 255, guns[FLAMER].hitMultiply, false, true)
             }
           }
         }
@@ -1771,7 +3365,7 @@ export class TSprite {
       case POLY_TYPE_REGENERATES: {
         if (this.health < gs.startHealth) {
           if (gs.mainTickCounter % 12 === 0) {
-            // {$IFDEF SERVER} — 회복도 HealthHit(-2) 경유. TODO(M2) stub.
+            // {$IFDEF SERVER} — 회복도 HealthHit(-2) 경유.
             this.healthHit(-2, num, 12, -1, gs.spriteParts.velocity[num])
             // {$ELSE} PlaySound(SFX_REGENERATE) — TODO(M2/render)
           }
@@ -1782,22 +3376,32 @@ export class TSprite {
         if (!this.deadMeat) {
           const a = cloneVec2(pos)
           a.y = a.y - 3.0
-          // {$IFNDEF SERVER} CreateSpark(A, (0,-1.3), 36, Num, 40) — TODO(M2/render)
-          // {$IFDEF SERVER} — 권위 로컬 심:
-          // TODO(M2): ServerCreateBullet(A, (0,0), Guns[M79].Num, Num, 255,
-          //   Guns[M79].HitMultiply, True)
-          this.healthHit(4000, num, 12, -1, gs.spriteParts.velocity[num]) // TODO(M2) stub
+          const b = vector2(0, 0)
+          // {$IFNDEF SERVER} CreateSpark(A, (0,-1.3), 36, Num, 40) — 상호배타 IFDEF 쌍:
+          //   서버 분기(폭발탄+즉사)가 게임플레이 진실이므로 스파크 분기는 미채택 (규약 8a).
+          // {$IFDEF SERVER} — 권위 로컬 심 (Sprites.pas:3094-3104):
+          serverCreateBullet(gs, a, b, guns[M79].num, num, 255, guns[M79].hitMultiply, true)
+          this.healthHit(4000, num, 12, -1, gs.spriteParts.velocity[num])
           this.health = -600
-          void a
         }
         break
       }
       case POLY_TYPE_HURTS_FLAGGERS: {
-        // TODO(M2) Things: if not DeadMeat and (HoldedThing > 0) and
-        //   (Thing[HoldedThing].Style < OBJECT_USSOCOM) then
-        //     if Random(10) = 0 then Health := Health - 10 (server) / PlaySound(SFX_ARG) (client)
-        // {$IFDEF SERVER} if Health < 1 then HealthHit(10, Num, 12, -1, Velocity)
-        // — Thing 배열이 아직 없어 조건 평가 불가, Things.pas(M2) 포팅 시 채움.
+        // Sprites.pas:3106-3123
+        if (
+          !this.deadMeat &&
+          this.holdedThing > 0 &&
+          gs.thing[this.holdedThing].style < OBJECT_USSOCOM
+        ) {
+          if (random(10) === 0) {
+            // {$IFDEF SERVER} — 권위 로컬 심이 대미지 적용. {$ELSE} PlaySound(SFX_ARG) — 렌더.
+            this.health = this.health - 10
+          }
+        }
+        // {$IFDEF SERVER}
+        if (this.health < 1) {
+          this.healthHit(10, num, 12, -1, gs.spriteParts.velocity[num])
+        }
         break
       }
     }
@@ -1867,8 +3471,16 @@ export class TSprite {
 
     if (gs.svSurvivalmodeClearweapons) {
       if (gs.survivalEndRound && !gs.weaponsCleaned) {
-        // TODO(M2) Things: 떨어진 무기 Thing들(OBJECT_USSOCOM..MINIGUN,
-        // OBJECT_COMBAT_KNIFE..LAW) 전부 Thing[J].Kill (Sprites.pas:3470-3481)
+        // 떨어진 무기 Thing 전부 제거 (Sprites.pas:3470-3481)
+        for (let j = 1; j <= MAX_THINGS; j++) {
+          if (
+            gs.thing[j].active &&
+            ((gs.thing[j].style >= OBJECT_USSOCOM && gs.thing[j].style <= OBJECT_MINIGUN) ||
+              (gs.thing[j].style >= OBJECT_COMBAT_KNIFE && gs.thing[j].style <= OBJECT_LAW))
+          ) {
+            gs.thing[j].kill()
+          }
+        }
         gs.weaponsCleaned = true
       }
     }
@@ -1918,8 +3530,7 @@ export class TSprite {
     this.bonusTime = 0
     this.multiKills = 0
     this.multiKillTime = 0
-    // TODO(M2): TertiaryWeapon := Guns[FRAGGRENADE];
-    this.tertiaryWeapon = emptyGun()
+    this.tertiaryWeapon = { ...guns[FRAGGRENADE] } // TertiaryWeapon := Guns[FRAGGRENADE] (record 복사)
     this.tertiaryWeapon.ammoCount = Math.trunc(gs.svMaxgrenades / 2)
     this.hasCigar = 0
     this.canMercy = true
@@ -1948,37 +3559,158 @@ export class TSprite {
     // KnifeCan[Num] := True (Server.pas 전역)
 
     if (this.holdedThing > 0 && this.holdedThing < MAX_THINGS + 1) {
-      // TODO(M2) Things: if Thing[HoldedThing].Style <> OBJECT_PARACHUTE then
-      //   Thing[HoldedThing].Respawn else Thing[HoldedThing].Kill
+      // 운반물 처리 (Sprites.pas:3566-3570)
+      if (gs.thing[this.holdedThing].style !== OBJECT_PARACHUTE) {
+        gs.thing[this.holdedThing].respawn()
+      } else {
+        gs.thing[this.holdedThing].kill()
+      }
     }
 
     this.holdedThing = 0
 
-    // {$IFNDEF SERVER} TODO(M2): if SelWeapon > 0 then
-    //   if WeaponSel[Num][SelWeapon] = 0 then SelWeapon := 0 (Game.pas WeaponSel)
+    // {$IFNDEF SERVER} if SelWeapon > 0 then if WeaponSel[Num][SelWeapon] = 0 then
+    //   SelWeapon := 0 (3574-3578) — 클라 림보메뉴 동기화. 규약 8a: 서버 분기(없음) 채택.
 
-    // TODO(M2): Weapon := Guns[NOWEAPON];
-    this.weapon = emptyGun()
+    this.weapon = { ...guns[NOWEAPON] } // Weapon := Guns[NOWEAPON] (record 복사)
 
     if (this.selWeapon > 0) {
-      // TODO(M2): {$IFNDEF SERVER} if (WeaponActive[SelWeapon] = 1) and
-      //   (WeaponSel[Num][SelWeapon] = 1) then ApplyWeaponByNum(SelWeapon, 1);
-      //   if Num = MySprite then ClientSpriteSnapshot (Sprites.pas:3580-3591)
+      // {$IFNDEF SERVER} (WeaponActive[SelWeapon]=1) and (WeaponSel=1) 게이트 +
+      //   ClientSpriteSnapshot (3583-3592) — 서버 분기는 게이트 없이 무조건 지급.
+      this.applyWeaponByNum(this.selWeapon, 1)
     }
 
-    // TODO(M2): SecWep := Player.SecWep + 1; SecondaryWeapon := Guns[PRIMARY_WEAPONS + SecWep]
-    //   (WeaponActive/WeaponSel 게이트, Sprites.pas:3594-3602) — 지금은 빈 총.
-    this.secondaryWeapon = emptyGun()
+    // Sprites.pas:3595-3603
+    const secWep = this.player!.secWep + 1
 
-    // TODO(M2): {$IFDEF SERVER}if sv_advancemode{$ENDIF} SelWeapon 비활성 시
-    //   Weapon := SecondaryWeapon; SecondaryWeapon := Guns[NOWEAPON] (Sprites.pas:3604-3611)
+    if (
+      secWep >= 1 &&
+      secWep <= SECONDARY_WEAPONS &&
+      gs.weaponActive[PRIMARY_WEAPONS + secWep] === 1 &&
+      gs.weaponSel[num][PRIMARY_WEAPONS + secWep] === 1
+    ) {
+      this.secondaryWeapon = { ...guns[PRIMARY_WEAPONS + secWep] }
+    } else {
+      this.secondaryWeapon = { ...guns[NOWEAPON] }
+    }
 
-    // TODO(M3) SERVER + TODO(M2): 봇 무기 랜덤화/PathNum/Brain.Use 블록 전체
-    // (Sprites.pas:3613-3712 — Player.ControlMethod = BOT 분기)
+    // {$IFDEF SERVER}if sv_advancemode{$ENDIF} — 서버 변형 채택: advancemode에서만 (3605-3612)
+    if (gs.svAdvancemode) {
+      if (
+        this.selWeapon > 0 &&
+        (gs.weaponActive[this.selWeapon] === 0 || gs.weaponSel[num][this.selWeapon] === 0)
+      ) {
+        this.weapon = this.secondaryWeapon
+        this.secondaryWeapon = { ...guns[NOWEAPON] }
+      }
+    }
 
-    // TODO(M2): if WeaponsInGame = 0 then Weapon := Guns[NOWEAPON];
+    // {$IFDEF SERVER} 봇 무기 랜덤화/PathNum/Brain.Use 블록 (Sprites.pas:3614-3711) —
+    // 규약 8a 채택 (봇은 M2 core 소관).
+    if (this.player!.controlMethod === BOT) {
+      this.brain.currentWaypoint = 0
 
-    this.parachute(gs.spriteParts.pos[num]) // TODO(M2) stub
+      if (
+        gs.svGamemode === GAMESTYLE_CTF ||
+        gs.svGamemode === GAMESTYLE_INF ||
+        gs.svGamemode === GAMESTYLE_HTF
+      ) {
+        this.brain.pathNum = this.player!.team
+      }
+
+      // randomize bot weapon
+      if (
+        this.brain.favWeapon !== guns[NOWEAPON].num &&
+        this.brain.favWeapon !== guns[KNIFE].num &&
+        this.brain.favWeapon !== guns[CHAINSAW].num &&
+        this.brain.favWeapon !== guns[LAW].num &&
+        !this.dummy
+      ) {
+        let anySelectable = false
+        for (let j = 1; j <= 10; j++) {
+          if (gs.weaponActive[j] === 1 && gs.weaponSel[num][j] === 1) {
+            anySelectable = true
+            break
+          }
+        }
+        if (anySelectable) {
+          do {
+            if (random(2) === 0) {
+              this.applyWeaponByNum(this.brain.favWeapon, 1)
+            } else {
+              const k = random(9) + 1
+              this.weapon = { ...guns[k] }
+            }
+
+            if (
+              gs.weaponsInGame < 6 &&
+              gs.weaponActive[MINIGUN] === 1 &&
+              gs.weaponSel[num][MINIGUN] === 1
+            ) {
+              this.weapon = { ...guns[MINIGUN] }
+            }
+
+            if (gs.svAdvancemode) {
+              // 원본 그대로: 루프 변수 j를 루프 밖에서 사용 — 전 슬롯 미선택이면 j는
+              // 상한+1(FPC 관행)로 ApplyWeaponByNum(11)이 된다 (수상한 코드, 보존).
+              let j = 1
+              for (; j <= PRIMARY_WEAPONS; j++) {
+                if (gs.weaponSel[num][j] === 1) break
+              }
+              this.applyWeaponByNum(j, 1)
+            }
+          } while (!(gs.weaponActive[this.weapon.num] === 1 || gs.svAdvancemode))
+        }
+      }
+
+      // Sprites.pas:3675-3691 — 서버 무기 전부 비활성 + 전 슬롯 미선택이면 맨손
+      let allInactive = true
+      for (let j = 1; j <= 10; j++) {
+        if (gs.weaponActive[j] !== 0 || gs.weaponSel[num][j] !== 0) {
+          allInactive = false
+          break
+        }
+      }
+      if (allInactive) {
+        this.weapon = { ...guns[NOWEAPON] }
+      }
+
+      const favWeaponIndex = weaponNumToIndex(this.brain.favWeapon)
+      if (
+        this.brain.favWeapon === NOWEAPON_NUM ||
+        isSecondaryWeaponIndex(favWeaponIndex) ||
+        this.dummy
+      ) {
+        this.weapon = { ...guns[favWeaponIndex] }
+        this.secondaryWeapon = { ...guns[NOWEAPON] }
+      }
+
+      if (this.brain.use !== 255) {
+        if (this.brain.use === 1) {
+          this.idleTime = 0
+          this.idleRandom = 1
+        }
+        if (this.brain.use === 2) {
+          this.idleTime = 0
+          this.idleRandom = 0
+        }
+      }
+
+      // Disarm bot if the primary weapon isn't allowed and selectable
+      // (원본 그대로: WeaponIndex := Weapon.Num — Num을 인덱스로 씀, 프라이머리는 Num=인덱스)
+      const weaponIndex = this.weapon.num
+      if (weaponIndex >= 1 && weaponIndex <= PRIMARY_WEAPONS) {
+        if (gs.weaponActive[weaponIndex] === 0 || gs.weaponSel[num][weaponIndex] === 0) {
+          this.weapon = { ...guns[NOWEAPON] }
+        }
+      }
+    }
+
+    if (gs.weaponsInGame === 0) {
+      this.weapon = { ...guns[NOWEAPON] }
+    }
+
+    this.parachute(gs.spriteParts.pos[num])
 
     // {$IFDEF SCRIPT} OnAfterPlayerRespawn — 생략.
 
@@ -2022,7 +3754,7 @@ export class TSprite {
         this.skeleton.oldPos[j] = cloneVec2(this.skeleton.pos[j])
       }
       // TODO: Fix this shouldn't change wepstats (원본 주석 보존)
-      this.die(NORMAL_DEATH, num, 1, -1, this.skeleton.pos[12]) // TODO(M2) stub
+      this.die(NORMAL_DEATH, num, 1, -1, this.skeleton.pos[12])
       player.deaths--
     }
   }
@@ -2206,8 +3938,7 @@ export function createSprite(
   spr.bonusTime = 0
   spr.multiKills = 0
   spr.multiKillTime = 0
-  // TODO(M2): Sprite[i].TertiaryWeapon := Guns[FRAGGRENADE];
-  spr.tertiaryWeapon = emptyGun()
+  spr.tertiaryWeapon = { ...guns[FRAGGRENADE] } // record 복사 (Sprites.pas:293)
   spr.hasCigar = 0
   spr.idleTime = DEFAULT_IDLETIME
   spr.idleRandom = -1
@@ -2254,13 +3985,21 @@ export function createSprite(
   spr.health = gs.startHealth
   spr.aimDistCoef = DEFAULTAIMDIST
 
-  // TODO(M2): Sprite[i].Weapon := Guns[NOWEAPON];
-  spr.weapon = emptyGun()
+  spr.weapon = { ...guns[NOWEAPON] } // record 복사 (Sprites.pas:333)
 
-  // TODO(M2): SecWep := Player.SecWep + 1; if in [1..SECONDARY_WEAPONS] and
-  //   WeaponActive[PRIMARY_WEAPONS + SecWep] = 1 then SecondaryWeapon := Guns[...]
-  //   else SecondaryWeapon := Guns[NOWEAPON] (Sprites.pas:339-344)
-  spr.secondaryWeapon = emptyGun()
+  // Sprites.pas:335-341 — Respawn과 달리 WeaponSel 게이트 없이 WeaponActive만 본다 (원본 그대로)
+  {
+    const secWep = spr.player.secWep + 1
+    if (
+      secWep >= 1 &&
+      secWep <= SECONDARY_WEAPONS &&
+      gs.weaponActive[PRIMARY_WEAPONS + secWep] === 1
+    ) {
+      spr.secondaryWeapon = { ...guns[PRIMARY_WEAPONS + secWep] }
+    } else {
+      spr.secondaryWeapon = { ...guns[NOWEAPON] }
+    }
+  }
 
   spr.jetsCount = gs.map.startJet
   // {$IFNDEF SERVER}
@@ -2291,9 +4030,23 @@ export function createSprite(
   spr.bulletCount = random(65535) // Random(High(Word)) // FIXME wat? (원본 주석 보존)
   spr.freeControls()
 
-  // TODO(M2): SortPlayers — 프래그 리스트 정렬 (Game.pas), 스코어보드 태스크에서.
+  // SortPlayers — 표시 순서 정렬 (ServerHelper.pas), 규약 11 계열 훅 (T10 배선).
+  gs.sortPlayers?.()
 
   return result
+}
+
+// ServerHelper.pas:92-102 FindLowestTeam — 인원이 가장 적은 팀 번호 (TM이면 1..4, 그 외 1..2).
+// ChangeTeam의 sv_balanceteams 가드가 사용. {$IFDEF SERVER} 소속 (규약 8a 채택).
+function findLowestTeam(gs: GameState, arr: number[]): number {
+  let tmp = 1
+  const hi = gs.svGamemode === GAMESTYLE_TEAMMATCH ? 4 : 2
+  for (let i = 1; i <= hi; i++) {
+    if (arr[tmp] > arr[i]) {
+      tmp = i
+    }
+  }
+  return tmp
 }
 
 /* ****************************************************************************
@@ -2353,51 +4106,105 @@ export function teamCollides(map: PolyMap, poly: number, team: number, bullet: b
 }
 
 /* ****************************************************************************
- *              RandomizeStart (Things.pas:620-663 — 임시 거처)               *
+ *            RandomizeStart re-export (Things.pas:620-663)                   *
  **************************************************************************** */
 
-// Things.pas가 M2에서 포팅되면 things.ts로 이동한다. 스폰 선택 로직: 요청 팀의 활성
-// 스폰포인트 중 랜덤(±4/±4 지터), 해당 팀 스폰이 없으면(예: DM 맵에서 팀 요청, 또는 그 반대)
-// result=false + 전체 활성 스폰포인트로 폴백 — DM(team 0)/CTF(team 1,2) 등 모든 모드가 이
-// 한 함수로 커버된다.
-// var Start out-param → { result, start } 반환 객체 (calc.ts 규약).
-export function randomizeStart(gs: GameState, team: number): { result: boolean; start: TVector2 } {
-  const map = gs.map
-  let result = true
+// M1에서 이 파일에 임시 거처였던 randomizeStart는 Things.pas 본체 포팅(M2 Task 5)과 함께
+// things.ts로 이동했다. 기존 `from './sprites'` import 경로 호환을 위해 재수출한다
+// (이 파일 내부의 Respawn 경로도 위 import를 그대로 사용).
+export { randomizeStart }
 
-  const start = vector2(0, 0)
+/* ****************************************************************************
+ *      봇 생성 — SharedConfig.pas:133-220 LoadBotConfig + Server.pas:925 AddBotPlayer  *
+ **************************************************************************** */
 
-  // Spawns: array[1..255] of Integer := -1 — Pascal은 고정 크기 배열, 여기선 필요 슬롯만.
-  const spawns: number[] = new Array(MAX_SPAWNPOINTS + 1).fill(-1)
+// Net.pas:104 상당 — 봇 이름 최대 길이 (SharedConfig.pas가 Min(Length, PLAYERNAME_CHARS)로 자름).
+const PLAYERNAME_CHARS = 24
 
-  let spawnsCount = 0
+// bots.json 항목 스키마 (build-assets.mjs가 .bot [BOT] 섹션 → JSON, T0). LoadBotConfig가 읽는
+// 키만 (색상/Chain/Hair 등 순수 렌더 필드는 core 미사용 — T13 web에서 사용).
+export interface BotConfigEntry {
+  Name: string
+  Favourite_Weapon: string
+  Secondary_Weapon: number
+  Friend: string
+  Accuracy: number
+  Shoot_Dead: number
+  Grenade_Frequency: number
+  OnStartUse: number
+  Chat_Frequency: number
+  Chat_Kill: string
+  Chat_Dead: string
+  Chat_LowHealth: string
+  Chat_SeeEnemy: string
+  Chat_Winning: string
+  Camping: number
+  Headgear?: number
+}
 
-  // Pascal은 고정 1..MAX_SPAWNPOINTS를 순회(미사용 슬롯은 Active=False 기본값) —
-  // polymap.spawnpoints는 실제 개수+1만 할당하므로 length 가드 추가 (관찰 동등).
-  for (let i = 1; i <= MAX_SPAWNPOINTS && i < map.spawnpoints.length; i++) {
-    if (map.spawnpoints[i].active && map.spawnpoints[i].team === team) {
-      spawnsCount++
-      spawns[spawnsCount] = i
-    }
+// SharedConfig.pas:133-220 LoadBotConfig — bots.json 항목을 sprite.brain/player에 적재.
+// 원본은 파일 IO(TMemIniFile)지만 이 포트는 파싱된 JSON 항목을 받는다 (core IO-free).
+// 사운드/콘솔/스크립트 디스패치는 생략. 반환 = 성공 여부.
+export function loadBotConfig(gs: GameState, spriteC: TSprite, cfg: BotConfigEntry): boolean {
+  const brain = spriteC.brain
+
+  brain.favWeapon = weaponNameToNum(cfg.Favourite_Weapon)
+  spriteC.player!.secWep = cfg.Secondary_Weapon
+  brain.friend = cfg.Friend
+  brain.accuracy = cfg.Accuracy
+  brain.accuracy = trunc(brain.accuracy * (gs.botsDifficulty / 100))
+  brain.deadKill = cfg.Shoot_Dead
+  brain.grenadeFreq = cfg.Grenade_Frequency
+  brain.use = cfg.OnStartUse
+
+  brain.chatFreq = cfg.Chat_Frequency
+  brain.chatFreq = pascalRound(2.5 * brain.chatFreq)
+  brain.chatKill = cfg.Chat_Kill
+  brain.chatDead = cfg.Chat_Dead
+  brain.chatLowHealth = cfg.Chat_LowHealth
+  brain.chatSeeEnemy = cfg.Chat_SeeEnemy
+  brain.chatWinning = cfg.Chat_Winning
+
+  brain.camper = cfg.Camping
+
+  spriteC.player!.name = cfg.Name.slice(0, Math.min(cfg.Name.length, PLAYERNAME_CHARS))
+
+  // 색상(Color1/2/Skin/Hair/JetColor)은 렌더 전용 (TPlayer 최소 인터페이스에 미포팅) — 생략.
+  // Headgear → HeadCap(0=없음): core는 0 여부만 보고 WearHelmet을 세팅한다. 실제 GFX id 매핑
+  // (GFX_GOSTEK_KAP/HELM)은 web 렌더(T13) 소관이라 여기선 headgear 값을 그대로 보존.
+  const headgear = cfg.Headgear ?? 0
+  spriteC.player!.headCap = headgear === 0 ? 0 : headgear
+  if (spriteC.player!.headCap === 0) spriteC.wearHelmet = 0
+  else spriteC.wearHelmet = 1
+
+  spriteC.player!.controlMethod = BOT
+  spriteC.freeControls()
+
+  return true
+}
+
+// Server.pas:925-984 AddBotPlayer — 봇 스프라이트를 게임에 추가. 반환 = 스프라이트 인덱스
+// (실패=0). ServerSendNewPlayerInfo/콘솔 메시지/스크립트 디스패치는 네트·UI라 생략.
+export function addBotPlayer(gs: GameState, cfg: BotConfigEntry, team: number): number {
+  const newPlayer = createTPlayer()
+  newPlayer.team = team
+  // NewPlayer.ApplyShirtColorFromTeam() — 셔츠 색(렌더 전용) 생략.
+
+  const r = randomizeStart(gs, team)
+  const p = createSprite(gs, r.start, vector2(0, 0), 1, 255, newPlayer, true)
+  if (p < 0) return 0 // 서버 만원 (createSprite 슬롯 없음)
+
+  if (!loadBotConfig(gs, gs.sprite[p], cfg)) {
+    gs.sprite[p].kill()
+    return 0
   }
 
-  if (spawnsCount === 0) {
-    result = false
-    for (let i = 1; i <= MAX_SPAWNPOINTS && i < map.spawnpoints.length; i++) {
-      if (map.spawnpoints[i].active) {
-        spawnsCount++
-        spawns[spawnsCount] = i
-      }
-    }
-  }
+  gs.sprite[p].respawn()
+  gs.sprite[p].player!.controlMethod = BOT
 
-  if (spawnsCount > 0) {
-    const i = random(spawnsCount) + 1
-    start.x = map.spawnpoints[spawns[i]].x - 4 + random(8)
-    start.y = map.spawnpoints[spawns[i]].y - 4 + random(4)
-  }
+  gs.sortPlayers?.()
 
-  return { result, start }
+  return p
 }
 
 /* ****************************************************************************
@@ -2419,7 +4226,7 @@ export function loadSpriteObjects(gs: GameState, read: (name: string) => string[
   gs.gostekSkeleton.gravity = 1.06 * gs.grav
   gs.gostekSkeleton.vDamping = 0.997
 
-  // TODO(M2): BoxSkeleton(kit.po, 2.15) / BulletParts(GRAV*2.25) / SparkParts(GRAV/1.4) /
-  // FlagSkeleton(flag.po, 4.0) / ParaSkeleton(para.po, 5.0) / StatSkeleton(stat.po, 4.0) /
-  // RifleSkeleton10..55(karabin.po, 1.0..5.5) — Things/Bullets/Sparks 포팅 시 (Anims.pas:348-380).
+  // BoxSkeleton/BulletParts/SparkParts/FlagSkeleton/ParaSkeleton/StatSkeleton/RifleSkeleton10..55
+  // (Anims.pas:373-400) — state.ts의 loadThingObjects(gs, read)로 이관됨 (M2 Task 2). 호출자는
+  // loadSpriteObjects와 loadThingObjects를 둘 다 호출해야 한다 (helpers.ts/main.ts 참조).
 }

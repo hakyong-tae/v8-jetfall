@@ -16,14 +16,16 @@
 //
 // MAX_* 상수는 Constants.pas가 아니라 PolyMap.pas / Waypoints.pas에 있다. PolyMap.pas가 이제
 // 포팅되었으므로(polymap.ts) MAX_POLYS/MAX_SECTOR/MAX_PROPS/MAX_SPAWNPOINTS/MAX_COLLIDERS는
-// 거기서 import한다(단일 출처 — 이 파일에 중복 정의하지 않는다). Waypoints.pas는 아직
-// 포팅되지 않았으므로 MAX_WAYPOINTS/MAX_CONNECTIONS만 로컬로 남는다.
+// 거기서 import한다(단일 출처 — 이 파일에 중복 정의하지 않는다). Waypoints.pas도 이제
+// 포팅되었으므로(waypoints.ts) MAX_WAYPOINTS/MAX_CONNECTIONS/TWaypoint/TWaypointAction도
+// 거기서 import한다 (Task 11 — 단일 출처 일원화).
 
 import type { TVector3 } from './vector'
 import { MAX_POLYS, MAX_SECTOR, MAX_PROPS, MAX_SPAWNPOINTS, MAX_COLLIDERS } from './polymap'
+import { MAX_WAYPOINTS, MAX_CONNECTIONS, TWaypointAction, type TWaypoint } from './waypoints'
 
-const MAX_WAYPOINTS = 5000 // Waypoints.pas:14
-const MAX_CONNECTIONS = 20 // Waypoints.pas:15
+export { TWaypointAction }
+export type { TWaypoint }
 
 // ReadString 로컬 버퍼 크기: `s: array[0..128] of AnsiChar` (MapFile.pas:216) — 129칸.
 // MaxSize(38/24/50 등) 와는 별개의, 길이 프리픽스가 담을 수 있는 최대값 한도다.
@@ -89,33 +91,8 @@ export interface TMapSpawnpoint {
   team: number
 }
 
-// Waypoints.pas:19 `{$scopedenums on} TWaypointAction = (None, StopAndCamp, Wait1Second, ...)`
-export enum TWaypointAction {
-  None = 0,
-  StopAndCamp = 1,
-  Wait1Second = 2,
-  Wait5Seconds = 3,
-  Wait10Seconds = 4,
-  Wait15Seconds = 5,
-  Wait20Seconds = 6,
-}
-
-export interface TWaypoint {
-  active: boolean
-  id: number
-  x: number
-  y: number
-  left: boolean
-  right: boolean
-  up: boolean
-  down: boolean
-  jetpack: boolean
-  pathNum: number
-  action: TWaypointAction
-  connectionsNum: number
-  // Waypoints.pas:28 `array[1..MAX_CONNECTIONS] of Integer` — 1-based, index 0 unused.
-  connections: number[]
-}
+// TWaypointAction / TWaypoint 정의는 waypoints.ts로 이관 (Waypoints.pas 원 소유) — 상단에서
+// import 후 재수출한다.
 
 export interface TMapFile {
   version: number

@@ -7,6 +7,7 @@ export interface Manifest {
   maps: Record<string, string>
   anims: Record<string, string>
   objects: Record<string, string>
+  sfx: Record<string, string>
 }
 
 const ASSET_ROOT = '/assets'

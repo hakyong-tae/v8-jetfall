@@ -6,18 +6,111 @@
 //
 // manifest 스키마 (모든 키는 소문자·확장자 제거, 값은 실제 상대경로):
 // {
-//   "sprites": { "gostek/stopa": "gostek/stopa.png" },
+//   "sprites": { "gostek/stopa": "gostek/stopa.png", "weapons/ak74": "weapons/ak74.png",
+//                "interface/health": "interface/health.png" },
 //   "maps":    { "ctf_ash": "maps/ctf_Ash.pms" },
 //   "anims":   { "stoi": "anims/stoi.poa" },
 //   "objects": { "gostek": "anims/gostek.po" }
 // }
+//
+// weapons.json / bots.json은 별도 파일로 생성 (ini→JSON, 값은 원본 그대로 — SharedConfig.pas
+// ReadWMConf/LoadBotConfig가 읽는 키가 명세):
+// {
+//   "normal":     { "info": { "name": "...", "version": "..." }, "guns": { "Desert Eagles": { "Damage": 1.81, ... } } },
+//   "realistic":  { "info": {...}, "guns": {...} }
+// }
+// bots.json: { "Admiral": { "Name": "Admiral", "Favourite_Weapon": "FN Minimi", ... } }
 import { Jimp } from 'jimp'
-import { cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, basename, extname, dirname } from 'node:path'
 
 const BASE = '/Users/hytae/Downloads/soldat-ref/base'
 const OUT = new URL('../public/assets/', import.meta.url).pathname
+
+// --- ini 파서 (TMemIniFile 대응: [Section] + Key=Value, ';' 주석 무시) ---
+
+function parseIni(text) {
+  const sections = {}
+  let current = null
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith(';')) continue
+    const sectionMatch = line.match(/^\[(.+)\]$/)
+    if (sectionMatch) {
+      current = sectionMatch[1]
+      sections[current] = {}
+      continue
+    }
+    const eq = line.indexOf('=')
+    if (eq === -1 || !current) continue
+    const key = line.slice(0, eq).trim()
+    const value = line.slice(eq + 1)
+    sections[current][key] = value
+  }
+  return sections
+}
+
+// TStringList.Values[] 조회는 대소문자 무시 (bot 파일의 'Chat_Lowhealth' 등)
+function iniValue(section, key) {
+  if (!section) return undefined
+  const found = Object.keys(section).find((k) => k.toLowerCase() === key.toLowerCase())
+  return found === undefined ? undefined : section[found]
+}
+
+// 빈 문자열은 그대로 유지 (Number('')===0 함정 방지), 숫자로 읽히면 숫자로 변환
+function coerce(raw) {
+  if (raw === undefined) return undefined
+  if (raw.trim() === '') return ''
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : raw
+}
+
+// SharedConfig.pas:258-274 ReadWMConf가 읽는 무기 키 17종 (섹션명=Gun.IniName)
+const WEAPON_KEYS = [
+  'Damage', 'FireInterval', 'Ammo', 'ReloadTime', 'Speed', 'BulletStyle',
+  'StartUpTime', 'Bink', 'MovementAcc', 'BulletSpread', 'Recoil', 'Push',
+  'InheritedVelocity', 'ModifierHead', 'ModifierChest', 'ModifierLegs', 'NoCollision',
+]
+
+async function buildWeaponsMod(iniPath) {
+  const sections = parseIni(await readFile(iniPath, 'utf8'))
+  const info = sections['Info'] ?? {}
+  const out = {
+    info: { name: iniValue(info, 'Name') ?? '', version: iniValue(info, 'Version') ?? '' },
+    guns: {},
+  }
+  for (const [sectionName, kv] of Object.entries(sections)) {
+    if (sectionName === 'Info') continue
+    const gun = {}
+    for (const key of WEAPON_KEYS) {
+      const raw = iniValue(kv, key)
+      if (raw !== undefined) gun[key] = coerce(raw)
+    }
+    out.guns[sectionName] = gun
+  }
+  return out
+}
+
+// SharedConfig.pas:133-220 LoadBotConfig가 [BOT] 섹션에서 읽는 키 전부
+const BOT_KEYS = [
+  'Name', 'Favourite_Weapon', 'Secondary_Weapon', 'Friend', 'Accuracy', 'Shoot_Dead',
+  'Grenade_Frequency', 'OnStartUse', 'Chat_Frequency', 'Chat_Kill', 'Chat_Dead',
+  'Chat_LowHealth', 'Chat_SeeEnemy', 'Chat_Winning', 'Camping', 'Color1', 'Color2',
+  'Skin_Color', 'Hair_Color', 'Hair', 'Headgear', 'Chain', 'Dummy',
+]
+
+async function buildBotEntry(botPath) {
+  const sections = parseIni(await readFile(botPath, 'utf8'))
+  const bot = sections['BOT']
+  if (!bot) return null
+  const out = {}
+  for (const key of BOT_KEYS) {
+    const raw = iniValue(bot, key)
+    if (raw !== undefined) out[key] = coerce(raw)
+  }
+  return out
+}
 
 if (!existsSync(BASE)) {
   console.error(`[build-assets] source asset dir not found: ${BASE}`)
@@ -75,7 +168,23 @@ async function convertDir(srcDir, outDir, manifest, keyPrefix) {
   }
 }
 
-const manifest = { sprites: {}, maps: {}, anims: {}, objects: {} }
+// 사운드(.wav) 복사 — 변환 없이 원본 그대로. manifest.sfx[key] = 상대경로.
+// 키 = 확장자 뺀 상대경로(소문자) — Sound.pas SAMPLE_FILES와 동일 규약(radio/ 하위폴더 유지).
+async function copySfx(srcDir, outDir, sfxManifest) {
+  await mkdir(outDir, { recursive: true })
+  const entries = await readdir(srcDir, { recursive: true })
+  for (const f of entries) {
+    if (extname(f).toLowerCase() !== '.wav') continue
+    const rel = f.split('\\').join('/')
+    const outPath = join(outDir, rel)
+    await mkdir(dirname(outPath), { recursive: true })
+    await cp(join(srcDir, f), outPath)
+    const key = rel.replace(/\.wav$/i, '').toLowerCase()
+    sfxManifest[key] = `sfx/${rel}`
+  }
+}
+
+const manifest = { sprites: {}, maps: {}, anims: {}, objects: {}, sfx: {} }
 
 await convertDir(join(BASE, 'shared/gostek-gfx'), join(OUT, 'gostek'), manifest.sprites, 'gostek')
 await convertDir(join(BASE, 'shared/textures'), join(OUT, 'textures'), manifest.sprites, 'textures')
@@ -108,6 +217,30 @@ for (const f of await readdir(join(BASE, 'shared/objects'))) {
   }
 }
 
+// 무기 그래픽 / HUD 그래픽 (기존 convertDir 재사용, sprites에 weapons/interface prefix로 등록)
+await convertDir(join(BASE, 'shared/weapons-gfx'), join(OUT, 'weapons'), manifest.sprites, 'weapons')
+await convertDir(join(BASE, 'shared/interface-gfx'), join(OUT, 'interface'), manifest.sprites, 'interface')
+
+// 사운드 효과 (.wav) — 변환 없이 복사, manifest.sfx에 등록 (T13 web/sound.ts가 로드)
+await copySfx(join(BASE, 'shared/sfx'), join(OUT, 'sfx'), manifest.sfx)
+
+// 무기 모드 (.ini → weapons.json)
+const weapons = {
+  normal: await buildWeaponsMod(join(BASE, 'server/configs/weapons.ini')),
+  realistic: await buildWeaponsMod(join(BASE, 'server/configs/weapons_realistic.ini')),
+}
+await writeFile(join(OUT, 'weapons.json'), JSON.stringify(weapons, null, 2))
+
+// 봇 설정 (.bot → bots.json)
+const bots = {}
+const botsDir = join(BASE, 'server/configs/bots')
+for (const f of await readdir(botsDir)) {
+  if (!f.toLowerCase().endsWith('.bot')) continue
+  const entry = await buildBotEntry(join(botsDir, f))
+  if (entry) bots[basename(f, extname(f))] = entry
+}
+await writeFile(join(OUT, 'bots.json'), JSON.stringify(bots, null, 2))
+
 await writeFile(join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2))
 console.log(
   'assets built:',
@@ -115,6 +248,10 @@ console.log(
   Object.keys(manifest.maps).length, 'maps,',
   Object.keys(manifest.anims).length, 'anims,',
   Object.keys(manifest.objects).length, 'objects,',
+  Object.keys(manifest.sfx).length, 'sfx,',
+  Object.keys(weapons.normal.guns).length, 'normal guns,',
+  Object.keys(weapons.realistic.guns).length, 'realistic guns,',
+  Object.keys(bots).length, 'bots,',
   failed, 'failed'
 )
 if (failed > 0) process.exitCode = 1

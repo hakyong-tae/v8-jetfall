@@ -13,6 +13,8 @@ import { Container, Sprite, Texture } from 'pixi.js'
 import type { GameState } from '../core/state'
 import type { Manifest } from './assets'
 import { loadTexture } from './assets'
+import { weaponNumToIndex, guns, AK74, EAGLE, FLAMER } from '../core/weapons'
+import { MAX_SPRITES } from '../core/sprites'
 
 // 색상 슬롯 (GostekGraphics.pas:23-29). TPlayer에 색상 필드가 아직 없어(M1 미포팅)
 // 기본 팔레트를 하드코딩 — TODO(M2): Player.ShirtColor/PantsColor/SkinColor 연결.
@@ -59,8 +61,44 @@ export const GOSTEK_PARTS: GostekPart[] = [
   { id: 'Right_Forearm',  image: 'gostek/reka',      p1: 13, p2: 16, cx: 0,    cy: 0.6,  flip: false, flex: 5, color: 'main',  role: 'base' },    // inc:129
   { id: 'Right_Hand',     image: 'gostek/dlon',      p1: 16, p2: 20, cx: 0,    cy: 0.5,  flip: true,  flex: 0, color: 'skin',  role: 'base' },    // inc:131
 ]
-// TODO(M2): 무기(GOSTEK_PRIMARY/SECONDARY_*), team2 텍스처 오프셋, 수류탄/체인/시가/헬멧/
-// 머리카락/부상(ranny) 파트 — GostekGraphics.inc 나머지 116개 엔트리.
+// TODO(M2): SECONDARY_*(등짐 무기), team2 텍스처 오프셋, 수류탄/체인/시가/헬멧/
+// 머리카락/부상(ranny) 파트 — GostekGraphics.inc 나머지 엔트리.
+
+// 손에 든 주무기(Primary_*) — GostekGraphics.inc 라인 75-125의 body 엔트리만 발췌.
+// 모두 p1=16(오른손), p2=15(왼손) 사이에 flip=1, flex=0, COLOR_NONE(흰색/틴트없음)으로 그린다.
+// 무기 index(weapons.ts EAGLE..FLAMER) → { manifest 스프라이트 키, flip 변형 키, cx, cy }.
+// clip/fire 서브파트는 이번 패스에서 생략(무기 실루엣만). manifest 무기 flip 키는 대부분
+// '<base>-2' 규약이나 chainsaw만 'chainsaw2' (원본 파일명 그대로).
+export interface GostekPrimary {
+  image: string
+  imageFlip: string
+  cx: number
+  cy: number
+}
+export const GOSTEK_PRIMARY: Record<number, GostekPrimary> = {
+  1:  { image: 'weapons/deserteagle', imageFlip: 'weapons/deserteagle-2', cx: 0.1,  cy: 0.8  }, // EAGLE  (Primary_Deagles)
+  2:  { image: 'weapons/mp5',         imageFlip: 'weapons/mp5-2',         cx: 0.15, cy: 0.6  }, // MP5
+  3:  { image: 'weapons/ak74',        imageFlip: 'weapons/ak74-2',        cx: 0.15, cy: 0.5  }, // AK74
+  4:  { image: 'weapons/steyraug',    imageFlip: 'weapons/steyraug-2',    cx: 0.2,  cy: 0.6  }, // STEYRAUG
+  5:  { image: 'weapons/spas12',      imageFlip: 'weapons/spas12-2',      cx: 0.1,  cy: 0.6  }, // SPAS12
+  6:  { image: 'weapons/ruger77',     imageFlip: 'weapons/ruger77-2',     cx: 0.1,  cy: 0.7  }, // RUGER77
+  7:  { image: 'weapons/m79',         imageFlip: 'weapons/m79-2',         cx: 0.1,  cy: 0.7  }, // M79
+  8:  { image: 'weapons/barretm82',   imageFlip: 'weapons/barretm82-2',   cx: 0.15, cy: 0.7  }, // BARRETT
+  9:  { image: 'weapons/m249',        imageFlip: 'weapons/m249-2',        cx: 0.15, cy: 0.6  }, // M249 (Minimi)
+  10: { image: 'weapons/minigun',     imageFlip: 'weapons/minigun-2',     cx: 0.05, cy: 0.5  }, // MINIGUN
+  11: { image: 'weapons/colt1911',    imageFlip: 'weapons/colt1911-2',    cx: 0.2,  cy: 0.55 }, // COLT (Socom)
+  13: { image: 'weapons/chainsaw',    imageFlip: 'weapons/chainsaw2',     cx: 0.1,  cy: 0.5  }, // CHAINSAW
+  14: { image: 'weapons/law',         imageFlip: 'weapons/law-2',         cx: 0.1,  cy: 0.6  }, // LAW
+  16: { image: 'weapons/bow',         imageFlip: 'weapons/bow-2',         cx: -0.4, cy: 0.55 }, // BOW
+  17: { image: 'weapons/flamer',      imageFlip: 'weapons/flamer-2',      cx: 0.2,  cy: 0.7  }, // FLAMER
+}
+const WEAPON_P1 = 16 // 오른손 파티클
+const WEAPON_P2 = 15 // 왼손 파티클
+
+// 파트 텍스처의 월드 축소비 — 1.8 에셋은 고해상도(클래식의 ~2배+)로 제작되어 mod.ini
+// [SCALE] DefaultScale=4.5 기반으로 엔진이 축소해 그린다. 원본 스크린샷과의 시각 대조로
+// 캘리브레이션한 값 (원본 병사 실측: 총/키 비율 0.37, 머리 ~4.4 world px).
+export const GOSTEK_TEX_SCALE = 1 / 4.5
 
 interface PartSprite {
   part: GostekPart
@@ -76,6 +114,10 @@ export async function loadGostekTextures(manifest: Manifest): Promise<Map<string
     keys.add(p.image)
     if (p.flip) keys.add(p.image + '2')
   }
+  for (const w of Object.values(GOSTEK_PRIMARY)) {
+    keys.add(w.image)
+    keys.add(w.imageFlip)
+  }
   const map = new Map<string, Texture>()
   await Promise.all(
     [...keys].map(async (k) => {
@@ -90,8 +132,13 @@ export async function loadGostekTextures(manifest: Manifest): Promise<Map<string
 export class GostekRenderer {
   readonly container = new Container()
   private parts: PartSprite[] = []
+  private readonly textures: Map<string, Texture>
+  // 손에 든 주무기 스프라이트 — Head 다음, Right_Arm 앞에 추가해 근접손이 총 위에 겹치게(원본
+  // 드로우순 GOSTEK_HEAD=41 < GOSTEK_PRIMARY_*=74.. < GOSTEK_RIGHT_ARM=126).
+  private readonly weaponSprite = new Sprite()
 
   constructor(textures: Map<string, Texture>) {
+    this.textures = textures
     for (const part of GOSTEK_PARTS) {
       const tex = textures.get(part.image)
       if (!tex) continue // 텍스처 누락 파트는 스킵 (manifest 스모크 테스트가 별도 검증)
@@ -100,6 +147,11 @@ export class GostekRenderer {
       sprite.visible = false
       this.container.addChild(sprite)
       this.parts.push({ part, sprite, tex, texFlip: textures.get(part.image + '2') ?? tex })
+      if (part.id === 'Head') {
+        this.weaponSprite.tint = GOSTEK_COLORS.none // COLOR_NONE — 무기는 틴트 없음(흰색)
+        this.weaponSprite.visible = false
+        this.container.addChild(this.weaponSprite)
+      }
     }
   }
 
@@ -149,8 +201,72 @@ export class GostekRenderer {
       sprite.anchor.set(part.cx, cy)
       sprite.position.set(x1, y1 + 1)
       sprite.rotation = Math.atan2(y2 - y1, x2 - x1)
-      sprite.scale.set(sx, sy)
+      sprite.scale.set(sx * GOSTEK_TEX_SCALE, sy * GOSTEK_TEX_SCALE)
       sprite.alpha = soldier.alpha / 255
+    }
+
+    this.updateWeapon(gs, spriteIndex)
+  }
+
+  // 손에 든 주무기 (RenderGostek:329-385 무기 선택 + 404-452 body 드로우, Primary_* 엔트리).
+  // p1=16(오른손)→p2=15(왼손) 선을 따라, flip 파트와 동일 수식으로 그린다(color NONE=흰색).
+  private updateWeapon(gs: GameState, spriteIndex: number): void {
+    const soldier = gs.sprite[spriteIndex]
+    const ws = this.weaponSprite
+
+    // 무기 index 결정 — 무기/로드아웃 시스템이 아직 미초기화(createWeapons 미호출 → guns[].num=0)인
+    // 마일스톤에서는 실루엣이 병사로 읽히도록 기본 소총(AK74)으로 폴백. 무기가 배선되면 자동 정상화.
+    const weaponsReady = guns[AK74]?.num !== 0
+    let idx = weaponsReady ? weaponNumToIndex(soldier.weapon.num) : AK74
+    if (idx < EAGLE || idx > FLAMER || !GOSTEK_PRIMARY[idx]) idx = AK74
+    const prim = GOSTEK_PRIMARY[idx]
+
+    const tex = this.textures.get(soldier.direction !== 1 ? prim.imageFlip : prim.image)
+    if (!tex || soldier.deadMeat) {
+      ws.visible = false
+      return
+    }
+    ws.visible = true
+    ws.texture = tex
+
+    const x1 = soldier.skeleton.pos[WEAPON_P1].x
+    const y1 = soldier.skeleton.pos[WEAPON_P1].y
+    const x2 = soldier.skeleton.pos[WEAPON_P2].x
+    const y2 = soldier.skeleton.pos[WEAPON_P2].y
+
+    // flip=1 파트: direction≠1 이면 cy→1-cy + 텍스처 교체(위에서 함), sx/sy는 1 유지.
+    const cy = soldier.direction !== 1 ? 1 - prim.cy : prim.cy
+    ws.anchor.set(prim.cx, cy)
+    ws.position.set(x1, y1 + 1)
+    ws.rotation = Math.atan2(y2 - y1, x2 - x1)
+    ws.scale.set(GOSTEK_TEX_SCALE, GOSTEK_TEX_SCALE)
+    ws.alpha = soldier.alpha / 255
+  }
+}
+
+// 봇전(다수 스프라이트)용 gostek 풀 — 스프라이트 슬롯 1..MAX_SPRITES마다 GostekRenderer 하나를
+// 지연 생성(첫 active 시)하고, 매 프레임 전부 update한다. 각 GostekRenderer.update가 자체적으로
+// active=false면 container.visible=false 처리하므로 죽은/미접속 슬롯은 자동으로 숨겨진다.
+export class GostekPool {
+  readonly container = new Container()
+  private renderers: (GostekRenderer | undefined)[] = []
+  private readonly textures: Map<string, Texture>
+
+  constructor(textures: Map<string, Texture>) {
+    this.textures = textures
+  }
+
+  update(gs: GameState): void {
+    for (let i = 1; i <= MAX_SPRITES; i++) {
+      let r = this.renderers[i]
+      const active = gs.sprite[i]?.active
+      if (!r) {
+        if (!active) continue // 아직 등장 안 한 슬롯은 렌더러 생성 지연
+        r = new GostekRenderer(this.textures)
+        this.container.addChild(r.container)
+        this.renderers[i] = r
+      }
+      r.update(gs, i)
     }
   }
 }
