@@ -203,4 +203,18 @@ export class HostSession {
     const h = setInterval(() => this.tick(), intervalMs)
     return () => clearInterval(h)
   }
+
+  // M3-E: 이미 돌고 있던 클라의 gs(전원 로컬 미러링된 활성 스프라이트)를 승계 — spawnPlayers()처럼
+  // randomizeStart+createSprite로 새로 스폰하지 않는다(순간이동/리스폰 없이 이어짐, §설계결정2).
+  static fromPromotedClient(transport: Transport, gs: GameState, knownSlots: Map<string, number>): HostSession {
+    const host = new HostSession(transport, gs)
+    for (const [account, num] of knownSlots) {
+      if (!gs.sprite[num]?.active) continue
+      host.slotOf.set(account, num)
+      host.prevKills.set(num, gs.sprite[num].player?.kills ?? 0)
+      host.prevDeadMeat.set(num, gs.sprite[num].deadMeat)
+    }
+    for (let i = 1; i <= MAX_BULLETS; i++) if (gs.bullet[i].active) host.prevActiveBullets.add(i) // 기존 탄환 오탐 방지
+    return host
+  }
 }
