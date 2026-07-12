@@ -42,6 +42,9 @@ import { mountLobby, type StartMatchArg } from './lobby/lobby-ui'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
 import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
+import { decideMigration } from '../net/host-migration'
+import { attemptReconnect } from '../net/reconnect'
+// (session.ts는 이번 단계에서 main.ts가 직접 소비하지 않음 — §Task4 "독립 seam" 선택, §자체리뷰)
 import type { TControl } from '../core/sprites'
 
 const MAP_NAME = 'ctf_ash' // manifest.maps 키
@@ -280,7 +283,9 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   const dedicatedUrl = a.lobby.roomState.dedicatedHostUrl
   // 전용호스트(플랜B)가 있으면: 사람은 항상 클라, 매치 트랜스포트만 별도 ws로 스위칭.
   // 전용호스트(agent8-in-node)면: dedicatedUrl 미설정, 기존 배선 그대로(agent8 릴레이 공용).
-  const isHost = dedicatedUrl ? false : a.lobby.isHost
+  const isDedicated = !!dedicatedUrl // 전용 Node 호스트(플랜B) — 마이그레이션/재접속 스코프 밖(스펙§3.1)
+  let isHost = dedicatedUrl ? false : a.lobby.isHost // let: 승격/강등 재대입(§설계결정)
+  let myEpoch = 0 // 내가 승격했다면 세대(스플릿브레인 강등 판단용)
   const transport = dedicatedUrl ? makeWsClientTransport(dedicatedUrl, account) : a.lobby.net
   if (dedicatedUrl) await transport.connect()
 
@@ -302,9 +307,56 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     clientSession = new ClientSession(transport, gs, account, () => currentLocalInput)
   }
 
+  // ── M3-E: 마이그레이션 감시 + 재접속 감시 + 오프라인 폴백(매 프레임 저비용 값 비교) ──
+  let reconnecting = false
+  let degraded = false
+  function degradeToOfflineBots(reason: string): void {
+    if (degraded) return
+    degraded = true
+    console.warn(`[net] falling back to offline bots: ${reason}`)
+    app.ticker.stop(); app.destroy(true); document.body.innerHTML = ''
+    startBotMatch().catch(fail)
+  }
+  function checkMigrationAndReconnect(): void {
+    if (isDedicated || degraded) return // 전용호스트: 마이그레이션 없음(스펙§3.1)
+    if (isHost) {
+      const rs = a.lobby.roomState
+      if (rs.hostAccount && rs.hostAccount !== account && (rs.hostEpoch ?? 0) > myEpoch) {
+        console.log(`[net] demoted — ${rs.hostAccount} claimed epoch ${rs.hostEpoch}`) // 스플릿브레인 가드
+        hostSession = null; isHost = false
+        clientSession = new ClientSession(transport, gs, account, () => currentLocalInput)
+      }
+      return
+    }
+    if (transport.status === 'offline' && !reconnecting) {
+      reconnecting = true
+      attemptReconnect({ transport, roomKey: a.lobby.roomKey ?? '' }).then((result) => {
+        reconnecting = false
+        if (result === 'gave-up') degradeToOfflineBots('reconnect failed')
+      }).catch(() => { reconnecting = false; degradeToOfflineBots('reconnect error') })
+      return
+    }
+    if (!clientSession) return
+    const action = decideMigration(clientSession.lastSnapshotAt, {
+      getPlayers: () => a.lobby.players, myAccount: account,
+      currentHostAccount: a.lobby.roomState.hostAccount, nowFn: () => Date.now(),
+    })
+    if (action !== 'promote') return
+    console.log('[net] promoting to host')
+    const promoted = HostSession.fromPromotedClient(transport, gs, clientSession.knownSlots)
+    myNum = promoted.spriteNumOf(account) ?? clientSession.myNum ?? -1
+    myEpoch = (a.lobby.roomState.hostEpoch ?? 0) + 1
+    hostSession = promoted; clientSession = null; isHost = true
+    void transport.updateRoomState({ hostAccount: account, hostEpoch: myEpoch })
+  }
+
+  // §설계결정5 수동우회용 디버그 훅(전용호스트 Plan-B의 dedicatedHostUrl 수동기록 등).
+  ;(window as unknown as Record<string, unknown>).__soldatNet = { lobby: a.lobby, gs, net: transport }
+
   // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
   let acc = 0
   app.ticker.add((ticker) => {
+    checkMigrationAndReconnect() // ← M3-E 신규 감시 훅, 루프 나머지는 기존 그대로
     acc += ticker.deltaMS
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
