@@ -196,6 +196,10 @@ const DIST_MAX = 900 // 이 거리(월드px) 밖은 무음 (선형 감쇠)
 
 export class SoundSystem {
   private ctx: AudioContext | null = null
+  // 마스터 게인 — 모든 재생(play/제트팩 루프)이 경유. 설정(볼륨/뮤트)의 웹 레이어 적용점 (M4-A).
+  private master: GainNode | null = null
+  private masterVolume = 1 // 0..1 (setMasterVolume이 0..100을 정규화해 보관)
+  private masterMuted = false
   private buffers = new Map<number, AudioBuffer>()
   private camera: Camera | null = null
   private manifest: Manifest
@@ -240,6 +244,32 @@ export class SoundSystem {
       target.addEventListener('pointerdown', resumeOnce, opts)
       target.addEventListener('keydown', resumeOnce, opts)
     }
+  }
+
+  // 마스터 게인 노드 — ctx 생성 시점이 두 곳(init / 제스처 지연 생성)이라 여기서 lazy 보장.
+  private masterOut(ctx: AudioContext): GainNode {
+    if (!this.master) {
+      this.master = ctx.createGain()
+      this.master.connect(ctx.destination)
+      this.applyMasterGain()
+    }
+    return this.master
+  }
+
+  private applyMasterGain(): void {
+    if (this.master) this.master.gain.value = this.masterMuted ? 0 : this.masterVolume
+  }
+
+  // ── 설정 배선 (M4-A): SFX 마스터 볼륨(0~100)/뮤트. ctx 생성 전 호출해도 값이 보관돼
+  // 첫 재생 시(masterOut) 반영된다. main.ts가 loadSettings 후 + onSettingsChange마다 호출.
+  setMasterVolume(v0to100: number): void {
+    this.masterVolume = Math.min(100, Math.max(0, v0to100)) / 100
+    this.applyMasterGain()
+  }
+
+  setMuted(b: boolean): void {
+    this.masterMuted = b
+    this.applyMasterGain()
   }
 
   // 테스트/디버그용 — resume 성사 여부 확인.
@@ -307,7 +337,7 @@ export class SoundSystem {
     src.buffer = buf
     const g = this.ctx.createGain()
     g.gain.value = gain * 0.6 // 헤드룸
-    src.connect(g).connect(this.ctx.destination)
+    src.connect(g).connect(this.masterOut(this.ctx))
     src.start()
   }
 
@@ -325,7 +355,7 @@ export class SoundSystem {
         src.loop = true
         const g = this.ctx.createGain()
         g.gain.value = gain * 0.5
-        src.connect(g).connect(this.ctx.destination)
+        src.connect(g).connect(this.masterOut(this.ctx))
         src.start()
         this.jetSrc = src
         this.jetGain = g
