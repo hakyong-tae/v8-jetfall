@@ -98,22 +98,44 @@ export interface SnapshotSprite {
   lastInputSeq: number // Uint16 — 호스트가 이 스프라이트에 마지막으로 적용한 입력 seq (0=아직없음/봇)
   posX: number; posY: number // Float32
   velX: number; velY: number // Float32
+  kills: number   // Uint8, 0..255 클램프 — 호스트 진실값(설계 결정 3)
+  deaths: number  // Uint8, 0..255 클램프
   control: ControlFlags & { mouseAimX: number; mouseAimY: number } // 컨트롤 릴레이 (설계 결정 1)
 }
 
-export interface SnapshotMsg { tick: number; sprites: SnapshotSprite[] }
+// ── C단계: CTF 깃발 상태 (선택적 블록) ──────────────────────────────────────
+export interface FlagState {
+  style: number         // Uint8 — OBJECT_ALPHA_FLAG=1 | OBJECT_BRAVO_FLAG=2
+  thingNum: number       // Uint8 — gs.teamFlag[style] (0 = 아직 스폰 안 됨, client 로직이 스킵)
+  holdingSprite: number  // Uint8 — 0 = 캐리어 없음
+  posX: number; posY: number // Float32
+}
 
-// 헤더(5B: tick Uint32 + count Uint8) + 스프라이트당 35B:
-// num1+team1+direction1+deadMeat1+health1+jetsCount2+legsAnimId1+legsFrame1+bodyAnimId1+
-// bodyFrame1+lastInputSeq2+posX4+posY4+velX4+velY4+controlBits2+mouseAimX2+mouseAimY2 = 35
-const SNAP_HEADER_BYTES = 5
-const SNAP_SPRITE_BYTES = 35
+export interface SnapshotMsg {
+  tick: number
+  teamScore1: number  // Uint8 — gs.teamScore[1] (Alpha). DM에선 항상 0, 무해.
+  teamScore2: number  // Uint8 — gs.teamScore[2] (Bravo)
+  sprites: SnapshotSprite[]
+  flags?: FlagState[] // 없거나 길이 0/2. encode 시 undefined는 빈 배열과 동일 취급.
+}
+
+// 헤더(8B: tick Uint32 + count Uint8 + teamScore1 Uint8 + teamScore2 Uint8 + flagCount Uint8) +
+// 스프라이트당 37B (기존 35B + kills1 + deaths1) + 깃발당 11B.
+const SNAP_HEADER_BYTES = 8
+const SNAP_SPRITE_BYTES = 37
+const SNAP_FLAG_BYTES = 11 // style1 + thingNum1 + holdingSprite1 + posX4 + posY4
 
 export function encodeSnapshot(msg: SnapshotMsg): ArrayBuffer {
-  const buf = new ArrayBuffer(SNAP_HEADER_BYTES + msg.sprites.length * SNAP_SPRITE_BYTES)
+  const flags = msg.flags ?? []
+  const buf = new ArrayBuffer(
+    SNAP_HEADER_BYTES + msg.sprites.length * SNAP_SPRITE_BYTES + flags.length * SNAP_FLAG_BYTES,
+  )
   const dv = new DataView(buf)
   dv.setUint32(0, msg.tick >>> 0, true)
   dv.setUint8(4, msg.sprites.length)
+  dv.setUint8(5, Math.max(0, Math.min(255, msg.teamScore1)))
+  dv.setUint8(6, Math.max(0, Math.min(255, msg.teamScore2)))
+  dv.setUint8(7, flags.length)
   let o = SNAP_HEADER_BYTES
   for (const s of msg.sprites) {
     dv.setUint8(o, s.num); o += 1
@@ -134,6 +156,15 @@ export function encodeSnapshot(msg: SnapshotMsg): ArrayBuffer {
     dv.setUint16(o, packBits(s.control), true); o += 2
     dv.setInt16(o, s.control.mouseAimX, true); o += 2
     dv.setInt16(o, s.control.mouseAimY, true); o += 2
+    dv.setUint8(o, Math.max(0, Math.min(255, s.kills))); o += 1
+    dv.setUint8(o, Math.max(0, Math.min(255, s.deaths))); o += 1
+  }
+  for (const f of flags) {
+    dv.setUint8(o, f.style); o += 1
+    dv.setUint8(o, f.thingNum); o += 1
+    dv.setUint8(o, f.holdingSprite); o += 1
+    dv.setFloat32(o, f.posX, true); o += 4
+    dv.setFloat32(o, f.posY, true); o += 4
   }
   return buf
 }
@@ -142,6 +173,9 @@ export function decodeSnapshot(buf: ArrayBuffer): SnapshotMsg {
   const dv = new DataView(buf)
   const tick = dv.getUint32(0, true)
   const count = dv.getUint8(4)
+  const teamScore1 = dv.getUint8(5)
+  const teamScore2 = dv.getUint8(6)
+  const flagCount = dv.getUint8(7)
   const sprites: SnapshotSprite[] = []
   let o = SNAP_HEADER_BYTES
   for (let k = 0; k < count; k++) {
@@ -163,9 +197,66 @@ export function decodeSnapshot(buf: ArrayBuffer): SnapshotMsg {
     const bits = unpackBits(dv.getUint16(o, true)); o += 2
     const mouseAimX = dv.getInt16(o, true); o += 2
     const mouseAimY = dv.getInt16(o, true); o += 2
+    const kills = dv.getUint8(o); o += 1
+    const deaths = dv.getUint8(o); o += 1
     sprites.push({ num, team, direction, deadMeat, health, jetsCount, legsAnimId, legsFrame,
-      bodyAnimId, bodyFrame, lastInputSeq, posX, posY, velX, velY,
+      bodyAnimId, bodyFrame, lastInputSeq, posX, posY, velX, velY, kills, deaths,
       control: { ...bits, mouseAimX, mouseAimY } })
   }
-  return { tick, sprites }
+  const flags: FlagState[] = []
+  for (let k = 0; k < flagCount; k++) {
+    const style = dv.getUint8(o); o += 1
+    const thingNum = dv.getUint8(o); o += 1
+    const holdingSprite = dv.getUint8(o); o += 1
+    const posX = dv.getFloat32(o, true); o += 4
+    const posY = dv.getFloat32(o, true); o += 4
+    flags.push({ style, thingNum, holdingSprite, posX, posY })
+  }
+  return { tick, teamScore1, teamScore2, sprites, flags }
+}
+
+// ── C단계: 탄환 생성 이벤트 (바이너리, 고빈도) ──────────────────────────────
+export interface BulletMsg {
+  seq: number       // Uint32
+  owner: number     // Uint8 — 발사자 스프라이트 num
+  weaponNum: number // Uint8 — TBullet.ownerWeapon
+  style: number     // Uint8 — TBullet.style (시각 스타일)
+  hitMultiply: number // Float32 — TBullet.hitMultiply (클라에선 코스메틱, 데미지는 호스트가 별도 판정)
+  seed: number      // Int32 — TBullet.seed (리코셰 등 재현용)
+  posX: number; posY: number // Float32 — TBullet.initial (생성시점 정확한 스폰좌표, 물리 미적용)
+  velX: number; velY: number // Float32 — 생성 직후 오일러 1스텝 적용된 근사치(설계 결정 1 참조)
+}
+const BULLET_BYTES = 31 // seq4+owner1+weaponNum1+style1+hitMultiply4+seed4+posX4+posY4+velX4+velY4
+
+export function encodeBullet(m: BulletMsg): ArrayBuffer {
+  const buf = new ArrayBuffer(BULLET_BYTES)
+  const dv = new DataView(buf)
+  dv.setUint32(0, m.seq >>> 0, true)
+  dv.setUint8(4, m.owner)
+  dv.setUint8(5, m.weaponNum)
+  dv.setUint8(6, m.style)
+  dv.setFloat32(7, m.hitMultiply, true)
+  dv.setInt32(11, m.seed, true)
+  dv.setFloat32(15, m.posX, true)
+  dv.setFloat32(19, m.posY, true)
+  dv.setFloat32(23, m.velX, true)
+  dv.setFloat32(27, m.velY, true)
+  return buf
+}
+
+export function decodeBullet(buf: ArrayBuffer): BulletMsg {
+  const dv = new DataView(buf)
+  return {
+    seq: dv.getUint32(0, true), owner: dv.getUint8(4), weaponNum: dv.getUint8(5), style: dv.getUint8(6),
+    hitMultiply: dv.getFloat32(7, true), seed: dv.getInt32(11, true),
+    posX: dv.getFloat32(15, true), posY: dv.getFloat32(19, true),
+    velX: dv.getFloat32(23, true), velY: dv.getFloat32(27, true),
+  }
+}
+
+// ── C단계: 킬 이벤트 (저빈도 — JSON 그대로, ASSIGN과 동일 규약) ─────────────
+export interface KillMsg {
+  killer: number // 0 = 환경사/자살 (사실 4: who===num이면 코어가 kills를 안 올림)
+  victim: number
+  weaponNum: number // 킬러가 그 순간 들고 있던 무기 — 근사(설계 결정 3)
 }
