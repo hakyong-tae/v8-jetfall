@@ -47,6 +47,9 @@ export class HostSession {
       const tPlayer = createTPlayer()
       tPlayer.team = p.team
       tPlayer.controlMethod = HUMAN
+      // 이름이 비면 코어 respawn()이 조기 반환(sprites.ts:3506 `{$IFNDEF SERVER}` 가드)해
+      //   사망 후 영구히 리스폰 못 함 — 계정명을 부여해 리스폰 경로를 활성화.
+      tPlayer.name = p.account
       const r = randomizeStart(this.gs, p.team)
       const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
       if (num < 0) continue // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
