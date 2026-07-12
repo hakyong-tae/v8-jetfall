@@ -322,6 +322,9 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     entities.update(gs)
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
+      // 스코어보드는 hud.update가 이미 gs.teamScore/kills를 읽어 그린다(스냅샷이 그 값을 덮어씀).
+      // C단계 추가: 킬피드는 클라 세션 전용(호스트/오프라인 경로는 스킵 → 봇전 회귀 없음).
+      if (clientSession) hud.setKillFeed(gs, clientSession.killFeed)
       const spr = gs.sprite[myNum]
       sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[myNum])
       const px = gs.spriteParts.pos[myNum].x

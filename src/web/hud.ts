@@ -38,6 +38,7 @@ export class Hud {
   private readonly weaponIcon = new Sprite()
   private readonly ammoText: Text
   private readonly topText: Text
+  private readonly killFeedText: Text
   private icons = new Map<string, Texture>()
   private screenW = 0
   private screenH = 0
@@ -52,11 +53,17 @@ export class Hud {
       style: { fill: 0xffffff, fontSize: 18, fontFamily: 'monospace', align: 'center' },
     })
     this.topText.anchor.set(0.5, 0)
+    this.killFeedText = new Text({
+      text: '',
+      style: { fill: 0xffe08a, fontSize: 14, fontFamily: 'monospace', align: 'right' },
+    })
+    this.killFeedText.anchor.set(1, 0) // 우측 상단 정렬
     this.weaponIcon.anchor.set(1, 1)
     this.container.addChild(this.bars)
     this.container.addChild(this.weaponIcon)
     this.container.addChild(this.ammoText)
     this.container.addChild(this.topText)
+    this.container.addChild(this.killFeedText)
   }
 
   async load(manifest: Manifest): Promise<void> {
@@ -137,6 +144,19 @@ export class Hud {
       this.topText.text = `Kills ${spr.player?.kills ?? 0} / ${gs.svKilllimit}`
     }
     this.topText.position.set(screenW / 2, 10)
+  }
+
+  // ── C단계: 네트워크 킬피드 (우상단). clientSession.killFeed(트랜지언트 알림)을 최근 5줄만 렌더.
+  //   호스트/오프라인 경로는 호출하지 않으므로(main.ts의 `if (clientSession)` 가드) 회귀 없음.
+  setKillFeed(gs: GameState, entries: ReadonlyArray<{ killer: number; victim: number; weaponNum: number }>): void {
+    const name = (num: number): string => {
+      if (num <= 0) return '☠'
+      const p = gs.sprite[num]?.player
+      return p && p.name !== '' ? p.name : `#${num}`
+    }
+    const lines = entries.slice(-5).map((e) => `${name(e.killer)} ⚔ ${name(e.victim)}`)
+    this.killFeedText.text = lines.join('\n')
+    this.killFeedText.position.set(this.screenW - 12, 40)
   }
 }
 
