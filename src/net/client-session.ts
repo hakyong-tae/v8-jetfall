@@ -10,6 +10,7 @@ import {
   type InputMsg, type SnapshotMsg, type BulletMsg, type KillMsg, type FlagState,
 } from './protocol'
 import { createSprite, createTPlayer, HUMAN, MAX_THINGS } from '../core/sprites'
+import { weaponNumToIndex } from '../core/weapons'
 import { createBullet } from '../core/bullets'
 import { createThing } from '../core/things'
 import { updateFrame } from '../core/game'
@@ -149,6 +150,14 @@ export class ClientSession {
         c.changeWeapon = s.control.changeWeapon; c.throwWeapon = s.control.throwWeapon
         c.reload = s.control.reload; c.prone = s.control.prone; c.flagThrow = s.control.flagThrow
         c.mouseAimX = s.control.mouseAimX; c.mouseAimY = s.control.mouseAimY
+
+        // 무기 로드아웃 동기화(코스메틱) — 지연생성된 원격 병사는 respawn()이 selWeapon=0으로
+        // 빈총을 쥐어주므로, 호스트가 실은 weaponNum으로 gostek이 그릴 spr.weapon을 맞춘다.
+        // 변경시에만 적용(매 스냅샷 재적용하면 guns[] 깊은복사로 탄약/장전 진행이 리셋됨).
+        // guns[]에 없는 num(-1 인덱스)은 스킵 — 무기 미적재 환경에서 spr.weapon 파손 방지.
+        if (spr.weapon.num !== s.weaponNum && weaponNumToIndex(s.weaponNum) !== -1) {
+          spr.applyWeaponByNum(s.weaponNum, 1)
+        }
       }
 
       // ── 설계 결정 5: 리스폰(deadMeat true→false) 즉시 스냅 ──

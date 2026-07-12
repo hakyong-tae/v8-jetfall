@@ -100,6 +100,7 @@ export interface SnapshotSprite {
   velX: number; velY: number // Float32
   kills: number   // Uint8, 0..255 클램프 — 호스트 진실값(설계 결정 3)
   deaths: number  // Uint8, 0..255 클램프
+  weaponNum: number // Uint8 — 손에 든 무기 TGun.num (NOWEAPON_NUM=255까지). 코스메틱 동기화용
   control: ControlFlags & { mouseAimX: number; mouseAimY: number } // 컨트롤 릴레이 (설계 결정 1)
 }
 
@@ -120,9 +121,9 @@ export interface SnapshotMsg {
 }
 
 // 헤더(8B: tick Uint32 + count Uint8 + teamScore1 Uint8 + teamScore2 Uint8 + flagCount Uint8) +
-// 스프라이트당 37B (기존 35B + kills1 + deaths1) + 깃발당 11B.
+// 스프라이트당 38B (Phase C 37B + weaponNum1) + 깃발당 11B.
 const SNAP_HEADER_BYTES = 8
-const SNAP_SPRITE_BYTES = 37
+const SNAP_SPRITE_BYTES = 38
 const SNAP_FLAG_BYTES = 11 // style1 + thingNum1 + holdingSprite1 + posX4 + posY4
 
 export function encodeSnapshot(msg: SnapshotMsg): ArrayBuffer {
@@ -158,6 +159,7 @@ export function encodeSnapshot(msg: SnapshotMsg): ArrayBuffer {
     dv.setInt16(o, s.control.mouseAimY, true); o += 2
     dv.setUint8(o, Math.max(0, Math.min(255, s.kills))); o += 1
     dv.setUint8(o, Math.max(0, Math.min(255, s.deaths))); o += 1
+    dv.setUint8(o, Math.max(0, Math.min(255, s.weaponNum))); o += 1
   }
   for (const f of flags) {
     dv.setUint8(o, f.style); o += 1
@@ -199,8 +201,9 @@ export function decodeSnapshot(buf: ArrayBuffer): SnapshotMsg {
     const mouseAimY = dv.getInt16(o, true); o += 2
     const kills = dv.getUint8(o); o += 1
     const deaths = dv.getUint8(o); o += 1
+    const weaponNum = dv.getUint8(o); o += 1
     sprites.push({ num, team, direction, deadMeat, health, jetsCount, legsAnimId, legsFrame,
-      bodyAnimId, bodyFrame, lastInputSeq, posX, posY, velX, velY, kills, deaths,
+      bodyAnimId, bodyFrame, lastInputSeq, posX, posY, velX, velY, kills, deaths, weaponNum,
       control: { ...bits, mouseAimX, mouseAimY } })
   }
   const flags: FlagState[] = []

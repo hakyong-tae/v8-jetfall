@@ -52,4 +52,4 @@
 
 ## 알려진 갭 (M4 이월)
 
-- **멀티에서 손에 든 무기 미표시**: SNAPSHOT에 `weaponNum` 필드가 없어(BULLET/KILL엔 있음), 클라가 스냅샷으로 지연생성한 원격 병사는 무기 로드아웃이 없어 `weapon.num=0`(빈총)으로 렌더된다. 로컬 데모(?wshost)/실배포 멀티 모두 해당. **해법**: `SnapshotSprite`에 `weaponNum: Uint8` 추가(protocol.ts), host `broadcastSnapshot`이 `spr.weapon.num` 실음, client `applySnapshot`이 원격 병사에 `applyWeaponByNum(weaponNum, 1)` 적용(또는 gostek 렌더가 스냅샷 weaponNum 직접 참조). 싱글/봇전은 무관(로컬에서 respawn이 무기 지급). 코스메틱 — 게임플레이(호스트 권위 데미지)엔 영향 없음.
+- ~~**멀티에서 손에 든 무기 미표시**~~ **(해결됨, 2026-07-13)**: `SnapshotSprite`에 `weaponNum: Uint8` 추가(스프라이트당 37B→38B), host `broadcastSnapshot`이 `spr.weapon.num`을 실고, client `applySnapshot`이 원격 병사에 한해 변경시에만 `applyWeaponByNum(weaponNum, 1)` 적용(매 스냅샷 재적용하면 guns[] 깊은복사로 탄약·장전 진행이 리셋되므로 가드, `weaponNumToIndex=-1`인 미지 num도 스킵). 자기 스프라이트는 제외 — 로컬 예측과 충돌 방지. net-b 통합테스트(`remote sprite's weapon loadout syncs from snapshot`)와 프로토콜 라운드트립 테스트로 커버, 로컬 데모(?wshost)에서 원격 병사가 AK74를 든 채 렌더되는 것 눈 검증 완료.

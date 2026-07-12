@@ -179,6 +179,7 @@ export class HostSession {
         velX: this.gs.spriteParts.velocity[num].x,
         velY: this.gs.spriteParts.velocity[num].y,
         kills: spr.player!.kills, deaths: spr.player!.deaths, // ← C단계 추가
+        weaponNum: spr.weapon.num, // 원격 병사 손 무기 렌더용(코스메틱) — 데미지는 BULLET이 권위
         control: {
           left: spr.control.left, right: spr.control.right, up: spr.control.up, down: spr.control.down,
           fire: spr.control.fire, jetpack: spr.control.jetpack, throwNade: spr.control.throwNade,
