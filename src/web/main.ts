@@ -7,7 +7,7 @@ import { loadAnimObjects } from '../core/anims'
 import { loadSpriteObjects, createSprite, createTPlayer, randomizeStart } from '../core/sprites'
 import { createWeapons, loadWeaponsConfig, guns, AK74, type WeaponsIniConfig } from '../core/weapons'
 import { loadMapFile } from '../core/mapfile'
-import { updateFrame } from '../core/game'
+import { updateFrame, wireGameHooks } from '../core/game'
 import { TEAM_ALPHA } from '../core/constants'
 import { vector2 } from '../core/vector'
 import { loadManifest, prefetchAnimFiles, fetchBinary, loadTexture } from './assets'
@@ -32,6 +32,7 @@ async function boot(): Promise<void> {
   const read = await prefetchAnimFiles(manifest)
 
   const gs = createGameState()
+  wireGameHooks(gs) // gs.sortPlayers 훅 배선 (T10)
   gs.anims = loadAnimObjects(read)
   loadSpriteObjects(gs, read)
   loadThingObjects(gs, read)

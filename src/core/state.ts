@@ -35,6 +35,16 @@ export interface TWaypoints {
   waypoint: unknown[]
 }
 
+// Game.pas:22-27 `TKillSort` — SortPlayers 정렬 슬롯. 원본 record는 Color: LongWord 필드를 갖지만
+// 그것은 {$IFNDEF SERVER} SortedTeamScore(스코어보드 색)에서만 쓰이는 클라 전용 값이라 이
+// 서버-권위 포트에선 생략한다 (SortedPlayers는 Kills/Deaths/Flags/PlayerNum만 채운다).
+export interface TKillSort {
+  kills: number
+  deaths: number
+  flags: number
+  playerNum: number
+}
+
 export interface GameState {
   ticks: number
 
@@ -253,8 +263,17 @@ export interface GameState {
   aliveNum: number
   teamAliveNum: number[] // array[0..5] of Byte
   // Net.pas:851 `PlayersTeamNum: array[1..4] of Integer` — 팀별 접속 인원 (Game.pas:756/777이
-  // 집계). INF 서바이벌 감점식이 읽는다. 집계 배선은 T10 — 그 전까지 0 유지. 1-based, [0] 더미.
+  // 집계). INF 서바이벌 감점식이 읽는다. 집계 배선은 T10 (SortPlayers). 1-based, [0] 더미.
   playersTeamNum: number[]
+
+  // ── Game.pas:98-100/103 SortPlayers 집계 전역들 (T10 배선). PlayersNum=접속 총원(데모 제외),
+  // BotsNum=봇 수, SpectatorsNum=관전자 수. SortPlayers가 매 호출 재집계한다.
+  playersNum: number
+  botsNum: number
+  spectatorsNum: number
+  // Game.pas:103 `SortedPlayers: array[1..MAX_SPRITES] of TKillSort` — 프래그 정렬 결과(표시
+  // 순서). SortPlayers가 Flags>Kills>Deaths 순으로 채운다. 1-based, [0] 더미.
+  sortedPlayers: TKillSort[]
   // Game.pas:86 `WeaponSel: array[1..MAX_SPRITES, 1..MAIN_WEAPONS] of Byte` — 플레이어별 무기
   // 선택 허용 비트. Die의 advance-mode 블록이 조작, Respawn(T7)이 읽는다. 1-based, [0] 더미행.
   // 초기값 1 채택 (M2 Task 7 수정): 서버 기동 시 `WeaponSel[j][i] := WeaponActive[i]`(=1,
@@ -367,6 +386,15 @@ export function createGameState(): GameState {
     aliveNum: 0,
     teamAliveNum: new Array(6).fill(0),
     playersTeamNum: new Array(5).fill(0),
+    playersNum: 0,
+    botsNum: 0,
+    spectatorsNum: 0,
+    sortedPlayers: Array.from({ length: MAX_SPRITES + 1 }, () => ({
+      kills: 0,
+      deaths: 0,
+      flags: 0,
+      playerNum: 0,
+    })),
     weaponSel: Array.from({ length: MAX_SPRITES + 1 }, () =>
       new Array(MAIN_WEAPONS + 1).fill(1),
     ),

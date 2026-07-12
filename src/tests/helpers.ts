@@ -7,6 +7,7 @@ import { createGameState, loadThingObjects, type GameState } from '../core/state
 import { loadAnimObjects } from '../core/anims'
 import { loadMapFile } from '../core/mapfile'
 import { loadSpriteObjects } from '../core/sprites'
+import { wireGameHooks } from '../core/game'
 
 const assetsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public/assets')
 
@@ -36,6 +37,7 @@ export function loadEmptyMap(gs: GameState, sectorsDivision = 64, sectorsNum = 2
 // 씽 스켈레톤 프로토타입 + ctf_Ash 맵 (emptyMap 옵션 시 폴리곤 0개 맵).
 export function setupTestGame(opts: { emptyMap?: boolean } = {}): GameState {
   const gs = createGameState()
+  wireGameHooks(gs) // gs.sortPlayers 훅 배선 (T10)
   gs.anims = loadAnimObjects(readAssetLines)
   loadSpriteObjects(gs, readAssetLines)
   loadThingObjects(gs, readAssetLines)
