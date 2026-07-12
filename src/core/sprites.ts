@@ -370,6 +370,14 @@ export interface TPlayer {
   // 정렬 키로 사용). M2 T9에서 추가.
   flags: number
   demoPlayer: boolean
+  // 렌더 전용 외형 필드 (core 시뮬 미사용 — web gostek 렌더러만 읽는다). Pascal TPlayer의
+  // ShirtColor/PantsColor/SkinColor/HairColor/Hair/Chain에 상당. PIXI tint용 0xRRGGBB.
+  shirtColor: number
+  pantsColor: number
+  skinColor: number
+  hairColor: number
+  hairStyle: number // 1..4 (GostekGraphics hair<n>)
+  headgear: number // 0=none, 1=helmet, 2=hat
 }
 
 export function createTPlayer(): TPlayer {
@@ -387,6 +395,14 @@ export function createTPlayer(): TPlayer {
     deaths: 0,
     flags: 0,
     demoPlayer: false,
+    // 렌더 전용 외형 기본값 (bots.json 없는 인간 플레이어/테스트용). shirt=초록, pants=청회색,
+    // skin=살구, hair=갈색, hairStyle=1, headgear=none — 아무도 대머리로 남지 않도록.
+    shirtColor: 0x4a7a3a,
+    pantsColor: 0x3f4a56,
+    skinColor: 0xe0b28a,
+    hairColor: 0x5a3a1a,
+    hairStyle: 1,
+    headgear: 0,
   }
 }
 
@@ -4140,6 +4156,25 @@ export interface BotConfigEntry {
   Chat_Winning: string
   Camping: number
   Headgear?: number
+  // 렌더 전용 외형 (Pascal hex 문자열 '$00RRGGBB'). core 미사용 — web gostek 렌더러가 읽는다.
+  Color1?: string // shirt
+  Color2?: string // pants
+  Skin_Color?: string
+  Hair_Color?: string
+  Hair?: number // 1..4
+  Chain?: number
+}
+
+// Pascal RGBA($00RRGGBB) 문자열 → PIXI tint(0xRRGGBB). '$'/'0x' 접두사와 평문 hex 모두 허용.
+// Soldat RGBA(longword)는 r=(v>>16)&FF, g=(v>>8)&FF, b=v&FF 이므로 하위 24비트만 취한다.
+export function parseGostekColor(s: string | undefined, fallback: number): number {
+  if (!s) return fallback
+  let h = s.trim()
+  if (h.startsWith('$')) h = h.slice(1)
+  else if (h.startsWith('0x') || h.startsWith('0X')) h = h.slice(2)
+  const v = parseInt(h, 16)
+  if (Number.isNaN(v)) return fallback
+  return v & 0xffffff
 }
 
 // SharedConfig.pas:133-220 LoadBotConfig — bots.json 항목을 sprite.brain/player에 적재.
@@ -4169,10 +4204,19 @@ export function loadBotConfig(gs: GameState, spriteC: TSprite, cfg: BotConfigEnt
 
   spriteC.player!.name = cfg.Name.slice(0, Math.min(cfg.Name.length, PLAYERNAME_CHARS))
 
-  // 색상(Color1/2/Skin/Hair/JetColor)은 렌더 전용 (TPlayer 최소 인터페이스에 미포팅) — 생략.
+  // 색상/머리(렌더 전용): TPlayer 외형 필드에 적재. core 시뮬은 이 값을 읽지 않는다(gostek 렌더러만).
+  const pl = spriteC.player!
+  pl.shirtColor = parseGostekColor(cfg.Color1, pl.shirtColor)
+  pl.pantsColor = parseGostekColor(cfg.Color2, pl.pantsColor)
+  pl.skinColor = parseGostekColor(cfg.Skin_Color, pl.skinColor)
+  pl.hairColor = parseGostekColor(cfg.Hair_Color, pl.hairColor)
+  const hs = cfg.Hair ?? 1
+  pl.hairStyle = hs >= 1 && hs <= 4 ? hs : 1 // 텍스처 안전 클램프 (0/범위밖 → 1, 대머리 방지)
+
   // Headgear → HeadCap(0=없음): core는 0 여부만 보고 WearHelmet을 세팅한다. 실제 GFX id 매핑
   // (GFX_GOSTEK_KAP/HELM)은 web 렌더(T13) 소관이라 여기선 headgear 값을 그대로 보존.
   const headgear = cfg.Headgear ?? 0
+  pl.headgear = headgear
   spriteC.player!.headCap = headgear === 0 ? 0 : headgear
   if (spriteC.player!.headCap === 0) spriteC.wearHelmet = 0
   else spriteC.wearHelmet = 1

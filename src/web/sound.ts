@@ -181,6 +181,7 @@ const SAMPLE_KEYS: (string | null)[] = [
 // M2 기초에서 실제로 재생할 SFX 세트 — 발사음(무기별)/폭발/리코셰/픽업/캡처/피격/사망.
 // 여기 없는 id는 로드/재생을 건너뛴다(스텝음 등 도배성 SFX는 M4에서 폴리시).
 const ENABLED_SFX = new Set<number>([
+  2, // SFX_ROCKETZ — 제트팩 루프음 (updateJetpack이 사용)
   1, 5, 6, 9, 11, 16, 17, 20, 21, 29, 31, 33, 35, 41, 48, // 발사·리로드·폭발
   55, 56, // godflame/flamer
   17, 20, 25, 63, 138, // 폭발류
@@ -199,12 +200,54 @@ export class SoundSystem {
   private camera: Camera | null = null
   private manifest: Manifest
   private assetRoot: string
-  // WebAudio는 사용자 제스처 전엔 suspend 상태 — 첫 재생 시 resume 시도
+  // WebAudio는 사용자 제스처 전엔 suspend 상태 — 실제 제스처(pointerdown/keydown)에 바인딩해 resume.
   private resumed = false
+  private gestureBound = false
+  // 제트팩 루프 소스/게인 (updateJetpack이 관리)
+  private jetSrc: AudioBufferSourceNode | null = null
+  private jetGain: GainNode | null = null
 
   constructor(manifest: Manifest, assetRoot = '/assets') {
     this.manifest = manifest
     this.assetRoot = assetRoot
+  }
+
+  // AudioContext resume을 '진짜' 사용자 제스처에 바인딩한다. 봇이 유저 클릭 전에 발사해도
+  // resumed 플래그가 잘못 latch되지 않도록, ctx.state==='running'이 확인될 때만 resumed=true.
+  // ctx가 아직 없으면 이 제스처에서 지연 생성한다. (main.ts가 캔버스 준비 후 1회 호출)
+  bindResumeGestures(target?: HTMLElement | null): void {
+    if (this.gestureBound || typeof window === 'undefined') return
+    this.gestureBound = true
+    const resumeOnce = (): void => {
+      if (!this.ctx) {
+        try {
+          this.ctx = new AudioContext()
+        } catch {
+          this.ctx = null
+          return
+        }
+      }
+      const ctx = this.ctx
+      if (!ctx) return
+      void ctx.resume().then(() => {
+        if (ctx.state === 'running') this.resumed = true
+      })
+    }
+    const opts: AddEventListenerOptions = { once: true }
+    window.addEventListener('pointerdown', resumeOnce, opts)
+    window.addEventListener('keydown', resumeOnce, opts)
+    if (target) {
+      target.addEventListener('pointerdown', resumeOnce, opts)
+      target.addEventListener('keydown', resumeOnce, opts)
+    }
+  }
+
+  // 테스트/디버그용 — resume 성사 여부 확인.
+  get isResumed(): boolean {
+    return this.resumed
+  }
+  get contextState(): string {
+    return this.ctx?.state ?? 'none'
   }
 
   // ENABLED_SFX 세트만 디코드해 버퍼 캐시에 적재. (전 157종 프리로드는 대역폭 낭비이므로 지연 로드 가능하나
@@ -241,26 +284,24 @@ export class SoundSystem {
     return (sfxId, pos) => this.play(sfxId, pos)
   }
 
+  // 카메라 기준 선형 거리 감쇠 (원본은 FMOD 3D — 여기선 2D 근사). 0이면 무음(스킵 신호).
+  private distanceGain(pos: TVector2 | null): number {
+    if (!this.camera || !pos) return 1
+    const dx = pos.x - this.camera.x
+    const dy = pos.y - this.camera.y
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    return Math.max(0, 1 - dist / DIST_MAX)
+  }
+
   private play(sfxId: number, pos: TVector2): void {
     if (!this.ctx) return
     const buf = this.buffers.get(sfxId)
     if (!buf) return // 미활성/미로드 SFX
+    // resume은 제스처 리스너(bindResumeGestures)가 담당 — 여기선 latch하지 않는다. suspend 상태면
+    // start()는 조용히 무시되며, 이후 사용자가 클릭해 running이 되면 정상 재생된다.
 
-    // 첫 재생 시 컨텍스트 resume (사용자 제스처 이후에만 성공)
-    if (!this.resumed && this.ctx.state === 'suspended') {
-      void this.ctx.resume()
-      this.resumed = true
-    }
-
-    // 카메라 기준 선형 거리 감쇠 (원본은 FMOD 3D — 여기선 2D 근사)
-    let gain = 1
-    if (this.camera && pos) {
-      const dx = pos.x - this.camera.x
-      const dy = pos.y - this.camera.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      gain = Math.max(0, 1 - dist / DIST_MAX)
-      if (gain <= 0) return
-    }
+    const gain = this.distanceGain(pos)
+    if (gain <= 0) return
 
     const src = this.ctx.createBufferSource()
     src.buffer = buf
@@ -268,6 +309,39 @@ export class SoundSystem {
     g.gain.value = gain * 0.6 // 헤드룸
     src.connect(g).connect(this.ctx.destination)
     src.start()
+  }
+
+  // 제트팩 루프음 (Control.pas:379/385 PlaySound(SFX_ROCKETZ,..,JetsSoundChannel) 상당 — 클라 전용).
+  // active면 SFX_ROCKETZ(id 2)를 루프 BufferSource로 시작, 아니면 정지. 매 프레임 거리 게인 갱신.
+  updateJetpack(active: boolean, pos: TVector2 | null): void {
+    if (!this.ctx) return
+    const buf = this.buffers.get(2) // SFX_ROCKETZ
+    const gain = active ? this.distanceGain(pos) : 0
+
+    if (active && buf && this.ctx.state === 'running') {
+      if (!this.jetSrc) {
+        const src = this.ctx.createBufferSource()
+        src.buffer = buf
+        src.loop = true
+        const g = this.ctx.createGain()
+        g.gain.value = gain * 0.5
+        src.connect(g).connect(this.ctx.destination)
+        src.start()
+        this.jetSrc = src
+        this.jetGain = g
+      } else if (this.jetGain) {
+        this.jetGain.gain.value = gain * 0.5 // 거리 게인 갱신
+      }
+    } else if (this.jetSrc) {
+      try {
+        this.jetSrc.stop()
+      } catch {
+        // 이미 정지됨 — 무시
+      }
+      this.jetSrc.disconnect()
+      this.jetSrc = null
+      this.jetGain = null
+    }
   }
 }
 

@@ -9,21 +9,40 @@
 //   비flip 파트는 sy = -1 (DrawGostekSprite 행렬 = T(x,y)·R(r)·S(sx,sy)·T(-cx,-cy)
 //   — PIXI Sprite의 position/rotation/scale/anchor 순서와 정확히 일치).
 //   flex > 0 이면 sx = min(1.5, |p1p2| / flex) (GostekGraphics.pas:449-450).
-import { Container, Sprite, Texture } from 'pixi.js'
+import { Container, Sprite, Texture, Graphics } from 'pixi.js'
 import type { GameState } from '../core/state'
 import type { Manifest } from './assets'
 import { loadTexture } from './assets'
 import { weaponNumToIndex, guns, AK74, EAGLE, FLAMER } from '../core/weapons'
 import { MAX_SPRITES } from '../core/sprites'
+import { GAMESTYLE_CTF, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
 
-// 색상 슬롯 (GostekGraphics.pas:23-29). TPlayer에 색상 필드가 아직 없어(M1 미포팅)
-// 기본 팔레트를 하드코딩 — TODO(M2): Player.ShirtColor/PantsColor/SkinColor 연결.
+// 색상 슬롯 (GostekGraphics.pas:23-29). 플레이어별 색이 없을 때의 폴백 팔레트.
+// 실제 렌더 색은 gs.sprite[i].player.{shirtColor,pantsColor,skinColor,hairColor}에서 읽는다(T13).
 export const GOSTEK_COLORS: Record<string, number> = {
   none: 0xffffff,
   main: 0x4a7a3a, // shirt
   pants: 0x3f4a56,
   skin: 0xe0b28a,
 }
+
+// CTF(팀전)에서 셔츠를 팀색으로 강제해 아군/적군을 즉시 구분 (Alpha=적, Bravo=청). 원본
+// Team2Offset과 별개로, 가독성을 위한 web 렌더 규칙.
+const CTF_SHIRT_ALPHA = 0xd23c3c
+const CTF_SHIRT_BRAVO = 0x3c6cd2
+
+// Bravo(team 2)는 team2 텍스처 세트 사용 (원본 Team2Offset). 'gostek/<part>' → 'gostek/team2/<part>'.
+function teamKey(image: string, team: number): string {
+  return team === TEAM_BRAVO ? image.replace('gostek/', 'gostek/team2/') : image
+}
+
+// 머리/헤드기어 파트 — 모두 Head와 동일 스켈레톤 부착(p1=9→p2=12, cx=0, cy=0.5, flip, flex=0),
+// Head 다음에 그린다(GostekGraphics.inc 순서 Head=41 < Mr_T/hair=45 < Helmet=46 < Hat=47).
+const HEAD_P1 = 9
+const HEAD_P2 = 12
+const HAIR_IMAGES = ['gostek/hair1', 'gostek/hair2', 'gostek/hair3', 'gostek/hair4']
+const HELM_IMAGE = 'gostek/helm'
+const HAT_IMAGE = 'gostek/kap'
 
 export interface GostekPart {
   id: string // GostekGraphics.inc ID 문자열
@@ -103,17 +122,23 @@ export const GOSTEK_TEX_SCALE = 1 / 4.5
 interface PartSprite {
   part: GostekPart
   sprite: Sprite
-  tex: Texture // direction=1 텍스처
-  texFlip: Texture // direction=-1 && flip 시 텍스처 ('<image>2')
 }
 
-// 파트 텍스처 일괄 로드 (flip 변형 포함)
+// 파트 텍스처 일괄 로드 (flip 변형 + team2 변형 + 머리/헤드기어 포함)
 export async function loadGostekTextures(manifest: Manifest): Promise<Map<string, Texture>> {
   const keys = new Set<string>()
-  for (const p of GOSTEK_PARTS) {
-    keys.add(p.image)
-    if (p.flip) keys.add(p.image + '2')
+  // 몸체 파트: base + flip, 그리고 Bravo용 team2 변형까지.
+  const addBoth = (img: string, withFlip: boolean) => {
+    keys.add(img)
+    keys.add(teamKey(img, TEAM_BRAVO))
+    if (withFlip) {
+      keys.add(img + '2')
+      keys.add(teamKey(img + '2', TEAM_BRAVO))
+    }
   }
+  for (const p of GOSTEK_PARTS) addBoth(p.image, p.flip)
+  // 머리/헤드기어 (전부 flip=true): hair1..4, helm, kap — base + team2.
+  for (const img of [...HAIR_IMAGES, HELM_IMAGE, HAT_IMAGE]) addBoth(img, true)
   for (const w of Object.values(GOSTEK_PRIMARY)) {
     keys.add(w.image)
     keys.add(w.imageFlip)
@@ -133,8 +158,10 @@ export class GostekRenderer {
   readonly container = new Container()
   private parts: PartSprite[] = []
   private readonly textures: Map<string, Texture>
-  // 손에 든 주무기 스프라이트 — Head 다음, Right_Arm 앞에 추가해 근접손이 총 위에 겹치게(원본
-  // 드로우순 GOSTEK_HEAD=41 < GOSTEK_PRIMARY_*=74.. < GOSTEK_RIGHT_ARM=126).
+  // 머리/헤드기어 스프라이트 (hair<n> | helm | kap 중 택1) — Head 다음, 무기 앞에 그린다.
+  private readonly headgearSprite = new Sprite()
+  // 손에 든 주무기 스프라이트 — Head/머리 다음, Right_Arm 앞에 추가해 근접손이 총 위에 겹치게(원본
+  // 드로우순 GOSTEK_HEAD=41 < 머리/헬멧=45.. < GOSTEK_PRIMARY_*=74.. < GOSTEK_RIGHT_ARM=126).
   private readonly weaponSprite = new Sprite()
 
   constructor(textures: Map<string, Texture>) {
@@ -146,8 +173,11 @@ export class GostekRenderer {
       sprite.tint = GOSTEK_COLORS[part.color]
       sprite.visible = false
       this.container.addChild(sprite)
-      this.parts.push({ part, sprite, tex, texFlip: textures.get(part.image + '2') ?? tex })
+      this.parts.push({ part, sprite })
       if (part.id === 'Head') {
+        // 머리/헤드기어를 Head 바로 위에, 무기를 그 위에 (z 순서 = addChild 순서).
+        this.headgearSprite.visible = false
+        this.container.addChild(this.headgearSprite)
         this.weaponSprite.tint = GOSTEK_COLORS.none // COLOR_NONE — 무기는 틴트 없음(흰색)
         this.weaponSprite.visible = false
         this.container.addChild(this.weaponSprite)
@@ -164,10 +194,23 @@ export class GostekRenderer {
     }
     this.container.visible = true
 
+    // ── 플레이어별 색상 해석 (CTF에선 셔츠를 팀색으로 강제 — 아군/적군 가독성)
+    const player = soldier.player
+    const team = player?.team ?? 0
+    let mainCol = player?.shirtColor ?? GOSTEK_COLORS.main
+    const pantsCol = player?.pantsColor ?? GOSTEK_COLORS.pants
+    const skinCol = player?.skinColor ?? GOSTEK_COLORS.skin
+    if (gs.svGamemode === GAMESTYLE_CTF) {
+      if (team === TEAM_ALPHA) mainCol = CTF_SHIRT_ALPHA
+      else if (team === TEAM_BRAVO) mainCol = CTF_SHIRT_BRAVO
+    }
+    const tintOf = (c: GostekPart['color']): number =>
+      c === 'main' ? mainCol : c === 'pants' ? pantsCol : c === 'skin' ? skinCol : GOSTEK_COLORS.none
+
     // 제트발 스왑 (RenderGostek:246-251)
     const jetsOn = soldier.control.jetpack && soldier.jetsCount > 0
 
-    for (const { part, sprite, tex, texFlip } of this.parts) {
+    for (const { part, sprite } of this.parts) {
       if (part.role === 'foot') sprite.visible = !jetsOn
       else if (part.role === 'jetfoot') sprite.visible = jetsOn
       else sprite.visible = true
@@ -181,18 +224,20 @@ export class GostekRenderer {
       let cy = part.cy
       let sx = 1
       let sy = 1
+      let imgKey = part.image
 
       if (soldier.direction !== 1) {
         if (part.flip) {
           cy = 1 - part.cy
-          sprite.texture = texFlip
+          imgKey = part.image + '2'
         } else {
           sy = -1
-          sprite.texture = tex
         }
-      } else {
-        sprite.texture = tex
       }
+      // team2(Bravo) 텍스처 우선, 없으면 base 폴백.
+      const t = this.textures.get(teamKey(imgKey, team)) ?? this.textures.get(imgKey)
+      if (t) sprite.texture = t
+      sprite.tint = tintOf(part.color)
 
       if (part.flex > 0) {
         sx = Math.min(1.5, Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / part.flex)
@@ -205,7 +250,52 @@ export class GostekRenderer {
       sprite.alpha = soldier.alpha / 255
     }
 
+    this.updateHeadgear(gs, spriteIndex, team, mainCol)
     this.updateWeapon(gs, spriteIndex)
+  }
+
+  // 머리카락/헬멧/모자 (GostekGraphics.inc Mr_T=45/Helmet=46/Hat=47). Head와 동일 부착.
+  // headgear=1 헬멧(셔츠색), 2 모자(셔츠색), 그 외 머리카락(hairColor). 대머리 방지를 위해 항상 하나 그린다.
+  private updateHeadgear(gs: GameState, spriteIndex: number, team: number, mainCol: number): void {
+    const soldier = gs.sprite[spriteIndex]
+    const s = this.headgearSprite
+    const player = soldier.player
+    const headgear = player?.headgear ?? 0
+
+    let img: string
+    let tint: number
+    if (headgear === 1) {
+      img = HELM_IMAGE
+      tint = mainCol // COLOR_MAIN — 헬멧은 셔츠색
+    } else if (headgear === 2) {
+      img = HAT_IMAGE
+      tint = mainCol
+    } else {
+      const style = player?.hairStyle ?? 1
+      img = HAIR_IMAGES[Math.min(3, Math.max(0, style - 1))]
+      tint = player?.hairColor ?? GOSTEK_COLORS.skin
+    }
+
+    // flip=true 파트: direction≠1 이면 '<img>2' 텍스처 (cx=0, cy=0.5 이므로 1-cy=cy 그대로).
+    const imgKey = soldier.direction !== 1 ? img + '2' : img
+    const tex = this.textures.get(teamKey(imgKey, team)) ?? this.textures.get(imgKey)
+    if (!tex) {
+      s.visible = false
+      return
+    }
+    s.visible = true
+    s.texture = tex
+    s.tint = tint
+
+    const x1 = soldier.skeleton.pos[HEAD_P1].x
+    const y1 = soldier.skeleton.pos[HEAD_P1].y
+    const x2 = soldier.skeleton.pos[HEAD_P2].x
+    const y2 = soldier.skeleton.pos[HEAD_P2].y
+    s.anchor.set(0, 0.5)
+    s.position.set(x1, y1 + 1)
+    s.rotation = Math.atan2(y2 - y1, x2 - x1)
+    s.scale.set(GOSTEK_TEX_SCALE, GOSTEK_TEX_SCALE)
+    s.alpha = soldier.alpha / 255
   }
 
   // 손에 든 주무기 (RenderGostek:329-385 무기 선택 + 404-452 body 드로우, Primary_* 엔트리).
@@ -251,12 +341,23 @@ export class GostekPool {
   readonly container = new Container()
   private renderers: (GostekRenderer | undefined)[] = []
   private readonly textures: Map<string, Texture>
+  // 로컬 플레이어 머리 위 자기 표시(▽) — Soldat friend-indicator 상당. 어떤 병사가 '나'인지 즉시 식별.
+  private readonly selfMarker = new Graphics()
 
   constructor(textures: Map<string, Texture>) {
     this.textures = textures
+    // 아래를 향한 작은 삼각형(꼭짓점 아래). 로컬 병사 머리 위에 띄운다. 밝은 노랑.
+    this.selfMarker
+      .moveTo(-5, -7)
+      .lineTo(5, -7)
+      .lineTo(0, 0)
+      .fill(0xffff00)
+    this.selfMarker.visible = false
+    this.container.addChild(this.selfMarker) // 병사들 위(같은 월드 레이어)
   }
 
-  update(gs: GameState): void {
+  // me = 로컬 플레이어 스프라이트 인덱스 (자기 표시용, <1 이면 표시 안 함).
+  update(gs: GameState, me = -1): void {
     for (let i = 1; i <= MAX_SPRITES; i++) {
       let r = this.renderers[i]
       const active = gs.sprite[i]?.active
@@ -267,6 +368,18 @@ export class GostekPool {
         this.renderers[i] = r
       }
       r.update(gs, i)
+    }
+
+    // 자기 표시: 로컬 병사 머리(pos[12]) 약간 위에 삼각형을 띄운다.
+    const meSpr = me >= 1 ? gs.sprite[me] : undefined
+    if (meSpr?.active && !meSpr.deadMeat) {
+      const head = meSpr.skeleton.pos[HEAD_P2]
+      this.selfMarker.visible = true
+      this.selfMarker.position.set(head.x, head.y - 11)
+      // 병사 컨테이너들이 매 프레임 뒤에 추가되므로 마커를 최상단으로 올려 항상 보이게.
+      this.container.setChildIndex(this.selfMarker, this.container.children.length - 1)
+    } else {
+      this.selfMarker.visible = false
     }
   }
 }

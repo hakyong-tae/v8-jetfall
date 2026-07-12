@@ -75,6 +75,10 @@ async function boot(): Promise<void> {
   const player = createTPlayer()
   player.name = 'Web'
   player.team = playerTeam
+  // 로컬 플레이어를 눈에 띄게 — DM에선 셔츠 청록(0x33ccff)으로 자기 병사 식별(CTF에선 팀색이 강제됨).
+  player.shirtColor = 0x33ccff
+  player.hairStyle = 1
+  player.headgear = 0
   const r = randomizeStart(gs, playerTeam)
   const me = createSprite(gs, r.start, vector2(0, 0), 1, 255, player, true)
   if (me < 0) throw new Error('createSprite failed')
@@ -159,6 +163,8 @@ async function boot(): Promise<void> {
   // 사운드 초기화(카메라 필요) 후 gs.playSound 배선. 실패해도(WebAudio 미지원) 무음 진행.
   await sound.init(camera)
   wireSound(gs, sound)
+  // AudioContext resume을 실제 사용자 제스처(캔버스/윈도우 클릭·키)에 바인딩 — 봇 선발사 무음버그 방지.
+  sound.bindResumeGestures(app.canvas)
 
   // 개발 콘솔 디버그 핸들
   ;(window as unknown as Record<string, unknown>).__soldat = {
@@ -173,7 +179,7 @@ async function boot(): Promise<void> {
         input.applyTo(spr.control, camera.x, camera.y, app.screen.width, app.screen.height)
         updateFrame(gs)
       }
-      gostek.update(gs)
+      gostek.update(gs, me)
       entities.update(gs)
       hud.update(gs, me, app.screen.width, app.screen.height)
       app.render()
@@ -194,9 +200,12 @@ async function boot(): Promise<void> {
     if (ticks === MAX_CATCHUP_TICKS) acc = 0 // 스파이럴 방지 — 밀린 시간 폐기
 
     // ── 렌더 동기화 (맵/프롭은 정적, 병사·탄환·씽·HUD·카메라 갱신)
-    gostek.update(gs)
+    gostek.update(gs, me)
     entities.update(gs)
     hud.update(gs, me, app.screen.width, app.screen.height)
+
+    // 제트팩 루프음 — 로컬 병사가 제트 분사 중일 때만 (Control.pas 클라 전용 루프 배선).
+    sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[me])
 
     const px = gs.spriteParts.pos[me].x
     const py = gs.spriteParts.pos[me].y
