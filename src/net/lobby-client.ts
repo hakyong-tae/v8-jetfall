@@ -5,6 +5,7 @@ import { TEAM_NONE } from '../core/constants'
 
 export class LobbyClient {
   roomState: RoomState = {} as RoomState
+  roomKey: string | null = null // M3-E: 재접속 rejoin용 — createRoom/joinRoom에서 세팅
   private startHandler: () => void = () => {}
   private changeHandler: () => void = () => {}
   private nowFn: () => number
@@ -28,6 +29,7 @@ export class LobbyClient {
     return { nick: this.nick, team: TEAM_NONE, ready: false, kills: 0, deaths: 0, joinedAt: this.nowFn() }
   }
   async createRoom(key: string, mode: number) {
+    this.roomKey = key // M3-E
     await this.transport.joinRoom(key)
     await this.transport.updateRoomState({
       mode, hostAccount: this.account, started: false, roundEndsAt: 0,
@@ -36,6 +38,7 @@ export class LobbyClient {
     this.roomState = await this.transport.getRoomState()
   }
   async joinRoom(key: string) {
+    this.roomKey = key // M3-E
     await this.transport.joinRoom(key)
     await this.transport.updateRoomState({ ['p_' + this.account]: this.me() })
     this.roomState = await this.transport.getRoomState()

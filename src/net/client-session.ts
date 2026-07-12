@@ -25,6 +25,8 @@ export type LocalInput = Omit<InputMsg, 'seq'>
 export class ClientSession {
   myNum: number | null = null
   killFeed: KillMsg[] = [] // C단계 — HUD가 읽는 킬피드 큐(트랜지언트, 스코어 진실 아님)
+  lastSnapshotAt = 0 // M3-E: 0=아직 미수신(마이그레이션 판단 보류, §설계결정3)
+  knownSlots = new Map<string, number>() // M3-E: account→num 전원 기록(승격 seed, §설계결정2)
 
   private seq = 0
   private tickCount = 0
@@ -38,13 +40,16 @@ export class ClientSession {
     public readonly gs: GameState,
     myAccount: string,
     private getLocalInput: () => LocalInput,
+    private nowFn: () => number = () => Date.now(), // M3-E: 테스트 가짜시계
   ) {
     this.myAccount = myAccount
     transport.onMessage((event, payload) => {
       if (event === MSG.ASSIGN) {
         const a = payload as { account: string; num: number }
+        this.knownSlots.set(a.account, a.num) // M3-E: 기존엔 자기 것만 봤음
         if (a.account === this.myAccount) this.myNum = a.num
       } else if (event === MSG.SNAPSHOT) {
+        this.lastSnapshotAt = this.nowFn() // M3-E
         this.applySnapshot(decodeSnapshot(payload as ArrayBuffer))
       } else if (event === MSG.BULLET) {
         this.spawnRemoteBullet(decodeBullet(payload as ArrayBuffer))

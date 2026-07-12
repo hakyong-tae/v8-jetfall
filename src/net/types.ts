@@ -17,6 +17,7 @@ export interface RoomState {
   started: boolean
   roundEndsAt: number
   dedicatedHostUrl?: string // D단계: 플랜B(자체ws) 전용호스트의 공개 ws URL. agent8-in-node 모드면 미설정.
+  hostEpoch?: number // M3-E: 호스트 승격 세대(스플릿브레인 강등 판단용, 마이그레이션 시 +1). 옵셔널 하위호환.
   [playerKey: string]: unknown  // 'p_{account}' → RoomPlayer
 }
 
