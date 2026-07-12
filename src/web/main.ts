@@ -38,13 +38,14 @@ import { Hud } from './hud'
 import { SoundSystem, wireSound } from './sound'
 import { InputState } from './input'
 import { Camera } from './camera'
+import { mountLobby } from './lobby/lobby-ui'
 
 const MAP_NAME = 'ctf_ash' // manifest.maps 키
 const TICK_MS = 1000 / 60 // 16.6667ms 고정스텝
 const MAX_CATCHUP_TICKS = 5
 const NUM_BOTS = 4 // DM 봇 수 (CTF는 팀당 절반)
 
-async function boot(): Promise<void> {
+async function startBotMatch(): Promise<void> {
   // ── 에셋 + 심 상태 (tests/helpers.ts setupTestGame의 브라우저판)
   const manifest = await loadManifest()
   const read = await prefetchAnimFiles(manifest)
@@ -222,10 +223,27 @@ async function boot(): Promise<void> {
   })
 }
 
-boot().catch((err) => {
+function fail(err: unknown): void {
   console.error('boot failed:', err)
   const pre = document.createElement('pre')
   pre.style.color = '#f66'
   pre.textContent = `boot failed: ${err instanceof Error ? err.stack : String(err)}`
   document.body.appendChild(pre)
-})
+}
+
+// 부트: 로비 경유 (A단계). ?nolobby=1이면 봇전 직행(개발 편의).
+// onStartMatch도 A단계에선 봇전으로 폴백(네트 인게임 동기화는 B단계).
+function boot(): void {
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('nolobby') === '1') {
+    startBotMatch().catch(fail)
+    return
+  }
+  const launch = () => { document.body.innerHTML = ''; startBotMatch().catch(fail) }
+  mountLobby(document.body, {
+    onStartMatch: launch,   // A단계: 네트 인게임(B) 전까지 봇전으로 폴백
+    onOfflineBots: launch,
+  })
+}
+
+boot()
