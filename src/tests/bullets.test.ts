@@ -18,12 +18,15 @@ import {
   EAGLE,
   M79,
   FRAGGRENADE,
+  BOW,
+  FLAMER,
+  THROWNKNIFE,
   BULLET_STYLE_PLAIN,
   BULLET_STYLE_FRAGNADE,
 } from '../core/weapons'
 import { createSprite, createTPlayer, randomizeStart, MAX_SPRITES } from '../core/sprites'
 import { POLY_TYPE_NORMAL } from '../core/polymap'
-import { TEAM_ALPHA, BULLET_TIMEOUT, GRENADE_TIMEOUT } from '../core/constants'
+import { TEAM_ALPHA, TEAM_NONE, BULLET_TIMEOUT, GRENADE_TIMEOUT } from '../core/constants'
 
 // sprites.test.ts/sparks.test.ts와 동일한 스폰 헬퍼 (실제 맵 위 테스트용 — 탄환 소유자).
 function spawnAt(gs: GameState, team = TEAM_ALPHA): number {
@@ -223,5 +226,210 @@ describe('TBullet.checkMapCollision (Bullets.pas:1073-1359) — 실제 맵', () 
     // (크기 자체는 Perp·D 성분 때문에 커질 수도 있어 방향 변화만 검증)
     const vAfter = gs.bulletParts.velocity[i]
     expect(vAfter.y).not.toBeCloseTo(2)
+  })
+})
+
+/* ****************************************************************************
+ *   T8: 스프라이트/씽/콜라이더 충돌 + Hit/ExplosionHit (Bullets.pas:1361-2683)  *
+ **************************************************************************** */
+
+// 빈 맵에 임의 위치로 스프라이트를 하나 만든다 (스폰포인트 불필요 — sPos 직접 지정).
+function makeSprite(gs: GameState, pos: { x: number; y: number }, team = TEAM_NONE): number {
+  const player = createTPlayer()
+  player.name = 'S'
+  player.team = team
+  return createSprite(gs, vector2(pos.x, pos.y), vector2(0, 0), 1, 255, player, true)
+}
+
+// 스켈레톤 특정 파트만 목표점 P에, 나머지 관심 파트는 멀리 치운다 (Where 결정론화).
+function placeSkeleton(gs: GameState, num: number, part: number, p: { x: number; y: number }): void {
+  const sk = gs.sprite[num].skeleton
+  // BodyPartsPriority = [12,11,10,6,5,4,3] — 전부 far로, 지정 파트만 P로.
+  for (const bp of [12, 11, 10, 6, 5, 4, 3]) {
+    sk.pos[bp] = vector2(1e6, 1e6)
+  }
+  sk.pos[part] = vector2(p.x, p.y)
+}
+
+describe('TBullet.checkSpriteCollision — 대미지 수식 (Bullets.pas:1361-1900)', () => {
+  let gs: GameState
+  beforeEach(() => {
+    gs = setupTestGame({ emptyMap: true })
+  })
+
+  it('PLAIN 명중: healthHit(amount = speed*hitMultiply*hitboxModifier, Where, Num), 규약 10(srv 없음) (1628-1630)', () => {
+    // owner=1, target=2 (둘 다 solo=TEAM_NONE). 흉부 파트(11)만 탄 경로에 배치.
+    const owner = makeSprite(gs, { x: 0, y: 0 })
+    const target = makeSprite(gs, { x: 1000, y: 1000 })
+    expect(owner).toBe(1)
+    expect(target).toBe(2)
+    gs.sprite[target].ceaseFireCounter = -1
+    gs.sprite[target].deadMeat = false
+    placeSkeleton(gs, target, 11, { x: 100, y: 100 })
+
+    // 탄: (90,100)에서 속도 (15,0) → 세그먼트가 (98,100) 원(r=7)을 관통. speed=15, hitM=2.0.
+    // speed=15 → 15/guns[EAGLE].speed(19)=0.789<0.9 이고 speed<=23 → 관통(pierce) 없이 Kill (1669-1678).
+    const i = serverCreateBullet(gs, vector2(90, 100), vector2(15, 0), guns[EAGLE].num, owner, 255, 2.0)
+    const b = gs.bullet[i]
+    const spy = vi.spyOn(gs.sprite[target], 'healthHit')
+
+    b.checkSpriteCollision(-1)
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    const [amount, who, where, what] = spy.mock.calls[0]
+    // 15 * 2.0 * guns[EAGLE].modifierChest(0.95) = 28.5
+    expect(amount).toBeCloseTo(15 * 2.0 * guns[EAGLE].modifierChest)
+    expect(amount).toBeCloseTo(28.5)
+    expect(who).toBe(owner)
+    expect(where).toBe(11) // 흉부 파트
+    expect(what).toBe(i) // Num
+    expect(b.active).toBe(false) // Kill
+  })
+
+  it('M79계 명중: 직격 healthHit(amount = |velocity|*hitMultiply) — hitboxModifier 미적용 (1745-1747)', () => {
+    const owner = makeSprite(gs, { x: 0, y: 0 })
+    const target = makeSprite(gs, { x: 1000, y: 1000 })
+    gs.sprite[target].ceaseFireCounter = -1
+    gs.sprite[target].deadMeat = false
+    // 머리 파트(12)에 배치 — M79 직격은 hitbox 안 곱하므로 결과 |vel|*hitM 그대로.
+    placeSkeleton(gs, target, 12, { x: 100, y: 100 })
+
+    const i = serverCreateBullet(gs, vector2(90, 100), vector2(10, 0), guns[M79].num, owner, 255, 3.0)
+    const b = gs.bullet[i]
+    const spy = vi.spyOn(gs.sprite[target], 'healthHit')
+
+    b.checkSpriteCollision(-1)
+
+    // M79계는 Hit(HIT_TYPE_EXPLODE)로 폭발도 일으켜 같은 스프라이트에 폭발 대미지(Where=1 하드코딩)를
+    // 추가로 넣는다. 직격 호출은 Where=명중파트(12)로 구분 (폭발은 Where=1).
+    const directCall = spy.mock.calls.find((c) => c[2] === 12)
+    expect(directCall).toBeDefined()
+    // |velocity|(10) * hitMultiply(3.0) — 모디파이어 없음 = 30.0
+    expect(directCall![0]).toBeCloseTo(30.0)
+  })
+
+  it('ARROW 명중: healthHit(amount = speed*hitMultiply*hitboxModifier), speed=live velocity (1728-1730)', () => {
+    const owner = makeSprite(gs, { x: 0, y: 0 })
+    const target = makeSprite(gs, { x: 1000, y: 1000 })
+    gs.sprite[target].ceaseFireCounter = -1
+    gs.sprite[target].deadMeat = false
+    placeSkeleton(gs, target, 11, { x: 100, y: 100 }) // 흉부
+
+    const i = serverCreateBullet(gs, vector2(90, 100), vector2(10, 0), guns[BOW].num, owner, 255, 2.0)
+    const b = gs.bullet[i]
+    b.timeOut = 400 // > ARROW_RESIST(280) — 조기 return 회피 + ARROW 케이스 진입
+    const spy = vi.spyOn(gs.sprite[target], 'healthHit')
+
+    b.checkSpriteCollision(-1)
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    // 10 * 2.0 * guns[BOW].modifierChest(1) = 20.0
+    expect(spy.mock.calls[0][0]).toBeCloseTo(10 * 2.0 * guns[BOW].modifierChest)
+    expect(spy.mock.calls[0][0]).toBeCloseTo(20.0)
+  })
+
+  it('FLAME 명중: healthHit(amount = hitMultiply) — 속도 무관 (1787-1788, 서버 재점화 임계 TimeOut<3)', () => {
+    const owner = makeSprite(gs, { x: 0, y: 0 })
+    const target = makeSprite(gs, { x: 1000, y: 1000 })
+    gs.sprite[target].ceaseFireCounter = -1
+    gs.sprite[target].deadMeat = false
+    gs.sprite[target].health = 150 // > -1
+    placeSkeleton(gs, target, 11, { x: 100, y: 100 })
+
+    // hitM=2.0 < guns[FLAMER].hitMultiply/3(≈6.33) → 재점화 CreateBullet 미발동, healthHit만.
+    const i = serverCreateBullet(gs, vector2(90, 100), vector2(10, 0), guns[FLAMER].num, owner, 255, 2.0)
+    const b = gs.bullet[i]
+    b.timeOut = 1 // < 3, ricochetCount 0 < 2 → 재점화/대미지 게이트 통과 (규약 13 서버값)
+    const spy = vi.spyOn(gs.sprite[target], 'healthHit')
+
+    b.checkSpriteCollision(-1)
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    // 속도(10)와 무관하게 HitMultiply(2.0) 그대로
+    expect(spy.mock.calls[0][0]).toBeCloseTo(2.0)
+  })
+
+  it('THROWNKNIFE 명중: healthHit(amount = |velocity|*hitMultiply*0.01) (1871-1873)', () => {
+    const owner = makeSprite(gs, { x: 0, y: 0 })
+    const target = makeSprite(gs, { x: 1000, y: 1000 })
+    gs.sprite[target].ceaseFireCounter = -1
+    gs.sprite[target].deadMeat = false
+    placeSkeleton(gs, target, 11, { x: 100, y: 100 })
+
+    const i = serverCreateBullet(gs, vector2(90, 100), vector2(10, 0), guns[THROWNKNIFE].num, owner, 255, 5.0)
+    const b = gs.bullet[i]
+    const spy = vi.spyOn(gs.sprite[target], 'healthHit')
+
+    b.checkSpriteCollision(-1)
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    // |velocity|(10) * hitMultiply(5.0) * 0.01 = 0.5
+    expect(spy.mock.calls[0][0]).toBeCloseTo(0.5)
+  })
+})
+
+describe('TBullet.explosionHit — 폭발 대미지/체인 (Bullets.pas:2364-2683)', () => {
+  let gs: GameState
+  beforeEach(() => {
+    gs = setupTestGame({ emptyMap: true })
+  })
+
+  it('FRAGNADE 폭발: 반경 내 생존 스프라이트 → (1/(dist+1))*guns[FRAGGRENADE].hitMultiply*hitbox, Where=1 하드코딩 (2484-2485)', () => {
+    const owner = makeSprite(gs, { x: -2000, y: -2000 }) // 폭발 반경 밖
+    const target = makeSprite(gs, { x: 1000, y: 1000 })
+    gs.sprite[target].ceaseFireCounter = -1
+    gs.sprite[target].deadMeat = false
+    // 모든 바디파트를 (550,500)에 — 폭발원 (500,500)에서 dist=50 (반경 85 이내).
+    for (let p = 1; p <= 16; p++) gs.sprite[target].skeleton.pos[p] = vector2(550, 500)
+
+    const i = serverCreateBullet(gs, vector2(500, 500), vector2(0, 0), guns[FRAGGRENADE].num, owner, 255, 1.0)
+    const b = gs.bullet[i]
+    gs.bulletParts.pos[i] = vector2(500, 500)
+    const spy = vi.spyOn(gs.sprite[target], 'healthHit')
+
+    b.explosionHit(HIT_TYPE_FRAGNADE, 0, 0)
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    const [amount, , where] = spy.mock.calls[0]
+    // 가장 가까운 파트=12(머리) → guns[FRAGGRENADE].modifierHead(1). dist=50.
+    // (1/(50+1)) * 1500 * 1 = 29.41176...
+    expect(amount).toBeCloseTo((1 / 51) * guns[FRAGGRENADE].hitMultiply * guns[FRAGGRENADE].modifierHead)
+    expect(amount).toBeCloseTo(29.41176, 3)
+    expect(where).toBe(1) // Where=1 하드코딩 보존
+    expect(b.active).toBe(false) // 2557: Active := False
+  })
+
+  it('수류탄 체인: AFTER_EXPLOSION_RADIUS(50) 내 다른 FRAGNADE 연쇄 기폭 (2556-2577)', () => {
+    stubOwner(gs, 1)
+    const a = serverCreateBullet(gs, vector2(500, 500), vector2(0, 0), guns[FRAGGRENADE].num, 1, 255, 1.0)
+    const bIdx = serverCreateBullet(gs, vector2(520, 500), vector2(0, 0), guns[FRAGGRENADE].num, 1, 255, 1.0)
+    gs.bulletParts.pos[a] = vector2(500, 500)
+    gs.bulletParts.pos[bIdx] = vector2(520, 500) // dist 20 < 50
+
+    const bulletB = gs.bullet[bIdx]
+    const hitSpy = vi.spyOn(bulletB, 'hit')
+
+    gs.bullet[a].explosionHit(HIT_TYPE_FRAGNADE, 0, 0)
+
+    expect(hitSpy).toHaveBeenCalledWith(HIT_TYPE_FRAGNADE)
+    expect(bulletB.active).toBe(false)
+  })
+
+  it('업스트림 버그 보존: CLUSTER 폭발도 체인함 (2553 `not Typ in [...]` 연산자우선순위 버그 → Exit 미실행, FPC 검증)', () => {
+    // 원본은 FRAGNADE/EXPLODE만 체인 의도였으나 `(not Typ) in [...]`가 항상 거짓이라 Exit가 죽은
+    // 코드가 되어 모든 폭발 타입이 체인 루프에 진입한다. 원본 런타임 동작 그대로 보존.
+    stubOwner(gs, 1)
+    const a = serverCreateBullet(gs, vector2(500, 500), vector2(0, 0), guns[FRAGGRENADE].num, 1, 255, 1.0)
+    const bIdx = serverCreateBullet(gs, vector2(520, 500), vector2(0, 0), guns[FRAGGRENADE].num, 1, 255, 1.0)
+    gs.bulletParts.pos[a] = vector2(500, 500)
+    gs.bulletParts.pos[bIdx] = vector2(520, 500)
+
+    const bulletB = gs.bullet[bIdx]
+    const hitSpy = vi.spyOn(bulletB, 'hit')
+    // HIT_TYPE_CLUSTER=7 — "의도상" 체인 안 해야 하나, 버그로 체인함.
+    gs.bullet[a].explosionHit(7 /* HIT_TYPE_CLUSTER */, 0, 0)
+
+    expect(hitSpy).toHaveBeenCalledWith(HIT_TYPE_FRAGNADE)
+    expect(bulletB.active).toBe(false)
   })
 })
