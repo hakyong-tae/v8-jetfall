@@ -396,7 +396,7 @@ export function changeMap(gs: GameState): void {
       spr.bonusStyle = BONUS_NONE
       // {$IFNDEF SERVER} SelWeapon := 0 — 클라 전용, 생략.
       spr.freeControls()
-      spr.weapon = guns[NOWEAPON]
+      spr.weapon = { ...guns[NOWEAPON] } // 규약 3: record 깊은복사 — 앨리어싱하면 이후 ammoCount 쓰기가 전역 guns[] 오염
 
       const secWep = spr.player!.secWep + 1
       if (
@@ -404,10 +404,15 @@ export function changeMap(gs: GameState): void {
         secWep <= SECONDARY_WEAPONS &&
         gs.weaponActive[PRIMARY_WEAPONS + secWep] === 1
       ) {
-        spr.secondaryWeapon = guns[PRIMARY_WEAPONS + secWep]
+        spr.secondaryWeapon = { ...guns[PRIMARY_WEAPONS + secWep] } // 규약 3
       } else {
-        spr.secondaryWeapon = guns[NOWEAPON]
+        spr.secondaryWeapon = { ...guns[NOWEAPON] } // 규약 3
       }
+
+      // 포트 편차: 원본 서버는 여기서 빈손으로 두고 클라 림보(무기선택 메뉴)의 재선택 메시지를
+      // 기다리지만, 이 포트엔 림보 메뉴가 없어(로드아웃은 스폰 정책 소유) 라운드 리셋 후 전원
+      // 영구 맨손이 된다 — respawn()(Sprites.pas:3580-3596)과 동일 규칙으로 selWeapon 즉시 재지급.
+      if (spr.selWeapon > 0) spr.applyWeaponByNum(spr.selWeapon, 1)
 
       spr.respawnCounter = 0
     }

@@ -11,7 +11,7 @@ import {
 } from '../net/protocol'
 import { setupTestGame } from './helpers'
 import { OBJECT_ALPHA_FLAG, GAMESTYLE_CTF } from '../core/constants'
-import { createWeapons, loadWeaponsConfig } from '../core/weapons'
+import { createWeapons, loadWeaponsConfig, AK74_NUM, MP5_NUM, NOWEAPON_NUM } from '../core/weapons'
 
 // MSG.BULLET 수신 시 createBullet()가 전역 guns[]를 인덱싱하므로 실전 무기 스탯을 적재해 둔다.
 const assetsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public/assets')
@@ -174,6 +174,50 @@ describe('ClientSession', () => {
     hostT.send(MSG.SNAPSHOT, snap(false, 9999)) // 리스폰 — 완전히 다른 좌표로 순간이동
     await Promise.resolve()
     expect(gs.spriteParts.pos[8].x).toBeCloseTo(9999, 0) // 스무딩 없이 즉시 정확히 스냅
+  })
+
+  it('own sprite adopts snapshot weapon loadout when locally empty-handed (spawn race: ASSIGN before first SNAPSHOT)', async () => {
+    const hub = new LoopbackHub()
+    const t = hub.createTransport('alice')
+    t.connect(); t.joinRoom('r')
+    const gs = setupTestGame({ emptyMap: true })
+    const client = new ClientSession(t, gs, 'alice', () => neutralControl())
+    void client
+    const hostT = hub.createTransport('host')
+    hostT.connect(); hostT.joinRoom('r')
+    hostT.send(MSG.ASSIGN, { account: 'alice', num: 3 }) // ASSIGN 먼저 — myNum 확정 후 스냅샷 도착
+    hostT.send(MSG.SNAPSHOT, encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
+      num: 3, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
+      legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
+      posX: 0, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum: AK74_NUM, control: neutralControl(),
+    }] }))
+    await Promise.resolve()
+    // 로컬 respawn은 selWeapon=0이라 Hands(NOWEAPON)를 쥐어줌 — 스냅샷 로드아웃을 채용해야 함
+    expect(gs.sprite[3].weapon.num).toBe(AK74_NUM)
+  })
+
+  it("own sprite's locally held weapon is NOT overridden by snapshot (no fight with local switch prediction)", async () => {
+    const hub = new LoopbackHub()
+    const t = hub.createTransport('alice')
+    t.connect(); t.joinRoom('r')
+    const gs = setupTestGame({ emptyMap: true })
+    const client = new ClientSession(t, gs, 'alice', () => neutralControl())
+    void client
+    const hostT = hub.createTransport('host')
+    hostT.connect(); hostT.joinRoom('r')
+    hostT.send(MSG.ASSIGN, { account: 'alice', num: 3 })
+    const snap = (weaponNum: number) => encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
+      num: 3, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
+      legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
+      posX: 0, posY: 0, velX: 0, velY: 0, kills: 0, deaths: 0, weaponNum, control: neutralControl(),
+    }] })
+    hostT.send(MSG.SNAPSHOT, snap(AK74_NUM)) // 스프라이트 생성 + 초기 로드아웃
+    await Promise.resolve()
+    gs.sprite[3].applyWeaponByNum(MP5_NUM, 1) // 로컬 무기전환(예측) 가정
+    hostT.send(MSG.SNAPSHOT, snap(AK74_NUM)) // 호스트는 아직 AK74라 보고
+    await Promise.resolve()
+    expect(gs.sprite[3].weapon.num).toBe(MP5_NUM) // 빈손이 아니면 자기 무기는 로컬 우선
+    expect(NOWEAPON_NUM).toBe(255) // 가드 상수 회귀 감지(빈손 판정 기준)
   })
 
   it('CTF: kills any local phantom flag of the same style not at the host slot, then adopts host slot', async () => {

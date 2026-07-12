@@ -24,7 +24,7 @@ import {
   type BotConfigEntry,
   type TSprite,
 } from '../core/sprites'
-import { createWeapons, loadWeaponsConfig, guns, AK74 } from '../core/weapons'
+import { createWeapons, loadWeaponsConfig, guns, AK74, NOWEAPON, PRIMARY_WEAPONS } from '../core/weapons'
 import { updateFrame, updateFrameN, sortPlayers, changeMap } from '../core/game'
 import {
   GAMESTYLE_DEATHMATCH,
@@ -190,6 +190,35 @@ describe('integration — headless bot DM/CTF (M2 완료 기준)', () => {
     expect(winner.player!.kills).toBe(0)
     expect(gs.mapChangeCounter).toBe(-60)
     assertAllFinite(gs)
+  })
+
+  it('라운드 리셋(changeMap): selWeapon 로드아웃 재지급(림보메뉴 부재 편차) + weapon이 guns[]를 앨리어싱하지 않음', () => {
+    seedRandom(9)
+    const gs = freshGame()
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+
+    // 데디 호스트 spawnPlayers와 동일 패턴의 HUMAN 스프라이트 (host-session.ts:49-62)
+    const tp = createTPlayer()
+    tp.controlMethod = HUMAN
+    tp.name = 'alice'
+    tp.team = TEAM_NONE
+    const num = createSprite(gs, vector2(500, 300), vector2(0, 0), 1, 255, tp, true)
+    gs.sprite[num].selWeapon = guns[AK74].num
+    gs.sprite[num].player!.secWep = 0
+    gs.sprite[num].respawn()
+    expect(gs.sprite[num].weapon.num).toBe(guns[AK74].num) // 전제: 스폰 로드아웃
+
+    changeMap(gs) // 타임리밋/킬리밋 라운드 리셋
+
+    // 원본은 여기서 빈손으로 두고 클라 림보(무기선택 메뉴)를 기다리지만, 이 포트엔 림보가
+    // 없어 영구 맨손이 됨 — respawn()과 같은 규칙으로 selWeapon 로드아웃이 재지급되어야 한다.
+    expect(gs.sprite[num].weapon.num).toBe(guns[AK74].num)
+
+    // 규약 3(record 깊은복사): 리셋 경로가 guns[] 전역을 앨리어싱하면 이후 ammoCount 쓰기가
+    // 전역 무기 스탯을 오염시킨다 — 반드시 별도 사본이어야 한다.
+    expect(gs.sprite[num].secondaryWeapon).not.toBe(guns[PRIMARY_WEAPONS + 1])
+    expect(gs.sprite[num].secondaryWeapon).not.toBe(guns[NOWEAPON])
+    expect(gs.sprite[num].weapon).not.toBe(guns[NOWEAPON])
   })
 
   it('CTF: 알파1+브라보1 봇, 7200틱 — 깃발 2개 활성 유지(무결성 가드), 무예외·무NaN', () => {

@@ -53,3 +53,6 @@
 ## 알려진 갭 (M4 이월)
 
 - ~~**멀티에서 손에 든 무기 미표시**~~ **(해결됨, 2026-07-13)**: `SnapshotSprite`에 `weaponNum: Uint8` 추가(스프라이트당 37B→38B), host `broadcastSnapshot`이 `spr.weapon.num`을 실고, client `applySnapshot`이 원격 병사에 한해 변경시에만 `applyWeaponByNum(weaponNum, 1)` 적용(매 스냅샷 재적용하면 guns[] 깊은복사로 탄약·장전 진행이 리셋되므로 가드, `weaponNumToIndex=-1`인 미지 num도 스킵). 자기 스프라이트는 제외 — 로컬 예측과 충돌 방지. net-b 통합테스트(`remote sprite's weapon loadout syncs from snapshot`)와 프로토콜 라운드트립 테스트로 커버, 로컬 데모(?wshost)에서 원격 병사가 AK74를 든 채 렌더되는 것 눈 검증 완료.
+  - **후속 1 — 자기 병사도 빈손 레이스 (해결됨, 2026-07-13)**: 클라 자기 스프라이트는 로컬 respawn이 selWeapon=0이라 Hands를 쥐는데, ASSIGN이 첫 SNAPSHOT보다 먼저 도착하면 원격 동기화 경로를 안 타 영구 맨손(HUD 1/1)이 됐다. `applySnapshot`이 자기 스프라이트도 **빈손(NOWEAPON)일 때만** 스냅샷 로드아웃을 채용하도록 확장 — 초기 지급은 받되 로컬 무기전환 예측과는 안 싸움.
+  - **후속 2 — 라운드 리셋 후 전원 영구 맨손 (해결됨, 2026-07-13, 게임플레이 버그)**: `changeMap`(타임리밋/킬리밋 리셋)이 respawn이 지급한 무기를 `weapon = guns[NOWEAPON]`로 도로 덮어씀 — 원본 서버는 클라 림보 메뉴 재선택에 의존하는 구조라 림보 없는 이 포트에선 첫 리셋(기본 타임리밋 ~10분) 후 전원 주먹 대전이 됐다(5시간 방치된 데모 호스트에서 발견). 포트 편차로 `changeMap`이 respawn()과 동일 규칙(selWeapon>0 재지급)을 수행 + 같은 자리의 guns[] 참조 앨리어싱(스프레드 누락, 규약 3 위반)도 수정. integration.test '라운드 리셋(changeMap)' 테스트로 커버.
+  - **디버깅 노하우**: 러닝 호스트의 실제 송출 바이트는 ws로 3번째 클라(hello 프레임 → `{type:'msg', event:'snap', b64}`)를 붙여 검사 가능. 브라우저 쪽 `Transport.onMessage`는 단일 핸들러 **교체** 방식이라 페이지에서 프로브용으로 호출하면 세션이 죽는다(새로고침으로 복구).
