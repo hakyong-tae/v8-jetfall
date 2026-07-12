@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { setupTestGame } from './helpers'
 import type { GameState } from '../core/state'
 import { vector2, cloneVec2, vec2Length } from '../core/vector'
@@ -401,9 +401,27 @@ describe('combat 1부 — healthHit/die/kill/dropWeapon/applyWeaponByNum (Task 6
 
 describe('combat 2부 — fire/throwGrenade/throwFlag/respawn 무기 (Task 7)', () => {
   let gs: GameState
+
+  // randomizeStart(스폰 위치)의 Random() 을 결정적으로 만드는 시드 LCG (game.test.ts와 동일 패턴).
+  // throwFlag 테스트가 스폰 지형에 의존(벽 근접 스폰이면 투척 레이캐스트가 막혀 flaky)하므로,
+  // 그 테스트만 열린 스폰이 나오는 시드로 고정한다.
+  const realRandom = Math.random
+  let seed = 0
+  function seedRandom(s: number): void {
+    seed = s
+    Math.random = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return seed / 2147483648
+    }
+  }
+
   beforeEach(() => {
     createWeapons(false)
     gs = setupTestGame()
+  })
+
+  afterEach(() => {
+    Math.random = realRandom
   })
 
   // 전투 셋업: 스폰 + 발사 게이트(ceaseFire) 해제 + 오른쪽 조준
@@ -503,6 +521,8 @@ describe('combat 2부 — fire/throwGrenade/throwFlag/respawn 무기 (Task 7)', 
   })
 
   it('throwFlag: 운반 깃발 투척 — holdingSprite/holdedThing 해제 + flagGrabCooldown (4599-4696)', () => {
+    // 시드 고정: 이 시드는 브라보 스폰이 우측(조준 방향)으로 열린 지형이라 투척 레이캐스트가 통과한다.
+    seedRandom(12)
     const spr = combatSpawn(TEAM_BRAVO)
     const f = createThing(gs, cloneVec2(gs.spriteParts.pos[spr.num]), 255, OBJECT_ALPHA_FLAG, 255)
     gs.thing[f].holdingSprite = spr.num
