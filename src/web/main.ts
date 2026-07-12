@@ -225,7 +225,8 @@ function attachEscMenu(
     })
   }
   const onKey = (e: KeyboardEvent): void => {
-    if (e.code !== 'Escape' || disposed) return
+    // e.key 기준 — 합성 이벤트(테스트 드라이버 등)는 code가 비어있을 수 있다
+    if ((e.key !== 'Escape' && e.code !== 'Escape') || disposed) return
     e.preventDefault()
     if (overlay) close()
     else open()

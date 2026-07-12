@@ -101,6 +101,12 @@ export function mountLobby(root: HTMLElement, opts: LobbyOpts): void {
   show(ctx, 'title')
 }
 
+// 인게임으로 핸드오프하기 전 화면 리스너/타이머 해제 — 안 하면 stale ESC 리스너가
+// 인게임 중 메뉴를 캔버스 위에 다시 그리는 버그가 난다(M4-A 검증에서 실제 발생).
+function handoff(ctx: Ctx): void {
+  for (const fn of ctx.cleanup.splice(0)) fn()
+}
+
 function show(ctx: Ctx, name: ScreenName): void {
   for (const fn of ctx.cleanup.splice(0)) fn()
   ctx.root.innerHTML = ''
@@ -210,8 +216,8 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
   scr.appendChild(el('h1', 'jf-logo jf-logo-sm', GAME_TITLE))
   scr.appendChild(el('p', 'jf-tagline', 'OFFLINE BOTS'))
   scr.appendChild(menuList([
-    ['Deathmatch', () => ctx.opts.onOfflineBots('dm')],
-    ['Capture the Flag', () => ctx.opts.onOfflineBots('ctf')],
+    ['Deathmatch', () => { handoff(ctx); ctx.opts.onOfflineBots('dm') }],
+    ['Capture the Flag', () => { handoff(ctx); ctx.opts.onOfflineBots('ctf') }],
     ['Back', () => show(ctx, 'menu')],
   ]))
   versionTag(scr)
@@ -400,6 +406,7 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
   lc.onChange(draw)
   lc.onStart(() => {
     const myTeam = lc.players[lc.account]?.team ?? TEAM_NONE
+    handoff(ctx)
     ctx.opts.onStartMatch({ lobby: lc, mode: lc.roomState.mode, myTeam })
   })
   ctx.cleanup.push(() => { lc.onChange(() => {}); lc.onStart(() => {}) })
