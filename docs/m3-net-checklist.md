@@ -49,3 +49,7 @@
    실배포 레이턴시 실측 후 튜닝.
 8. **스플릿브레인 경합 통합테스트 없음** — 깨끗한 호스트 죽음만 검증. 좀비호스트 동시 브로드캐스트
    경합 시나리오 전용 테스트는 후속 후보.
+
+## 알려진 갭 (M4 이월)
+
+- **멀티에서 손에 든 무기 미표시**: SNAPSHOT에 `weaponNum` 필드가 없어(BULLET/KILL엔 있음), 클라가 스냅샷으로 지연생성한 원격 병사는 무기 로드아웃이 없어 `weapon.num=0`(빈총)으로 렌더된다. 로컬 데모(?wshost)/실배포 멀티 모두 해당. **해법**: `SnapshotSprite`에 `weaponNum: Uint8` 추가(protocol.ts), host `broadcastSnapshot`이 `spr.weapon.num` 실음, client `applySnapshot`이 원격 병사에 `applyWeaponByNum(weaponNum, 1)` 적용(또는 gostek 렌더가 스냅샷 weaponNum 직접 참조). 싱글/봇전은 무관(로컬에서 respawn이 무기 지급). 코스메틱 — 게임플레이(호스트 권위 데미지)엔 영향 없음.
