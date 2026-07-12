@@ -12,8 +12,9 @@ import {
   spawnBoxes,
   randomizeStart,
 } from '../core/things'
-import { createWeapons } from '../core/weapons'
+import { createWeapons, guns, NOWEAPON, EAGLE, FLAMER, M2, FRAGGRENADE, CLUSTERGRENADE } from '../core/weapons'
 import { createSprite, createTPlayer, MAX_THINGS } from '../core/sprites'
+import { MAX_BULLETS } from '../core/bullets'
 import {
   GUN_RADIUS,
   OBJECT_ALPHA_FLAG,
@@ -21,11 +22,29 @@ import {
   OBJECT_DESERT_EAGLE,
   OBJECT_COMBAT_KNIFE,
   OBJECT_MEDICAL_KIT,
+  OBJECT_GRENADE_KIT,
+  OBJECT_FLAMER_KIT,
+  OBJECT_PREDATOR_KIT,
+  OBJECT_VEST_KIT,
+  OBJECT_BERSERK_KIT,
+  OBJECT_CLUSTER_KIT,
+  OBJECT_STATIONARY_GUN,
   FLAG_TIMEOUT,
   FLAG_INTEREST_TIME,
   GUNRESISTTIME,
   KIT_RADIUS,
   TEAM_ALPHA,
+  TEAM_BRAVO,
+  BONUS_FLAMEGOD,
+  BONUS_PREDATOR,
+  BONUS_BERSERKER,
+  FLAMERBONUSTIME,
+  PREDATORBONUSTIME,
+  BERSERKERBONUSTIME,
+  PREDATORALPHA,
+  DEFAULTVEST,
+  CLUSTER_GRENADES,
+  M2GUN_OVERHEAT,
 } from '../core/constants'
 
 // sprites.test.ts/bullets.test.ts와 동일한 스폰 헬퍼 (실제 맵 위 테스트용 — 씽 소유자).
@@ -303,5 +322,323 @@ describe('spawnBoxes / thingCollision (Things.pas:556-618)', () => {
       if (sp.active && vec2Length(vec2Subtract(vector2(sp.x, sp.y), r.start)) < 12) near = true
     }
     expect(near).toBe(true)
+  })
+})
+
+/* ****************************************************************************
+ *   T9: CheckSpriteCollision — 픽업/깃발 (Things.pas:1602-2145 {$IFDEF SERVER})
+ **************************************************************************** */
+
+describe('checkSpriteCollision — 픽업·깃발 (Things.pas:1602-2145)', () => {
+  let gs: GameState
+
+  // 특정 좌표에 스프라이트 스폰 (씽 픽업 판정은 SpriteParts.Pos / Skeleton.Pos[8]을 읽는다).
+  function spawnSpriteAt(gs2: GameState, x: number, y: number, team = TEAM_ALPHA): number {
+    const player = createTPlayer()
+    player.name = 'Test'
+    player.team = team
+    const n = createSprite(gs2, vector2(x, y), vector2(0, 0), 1, 255, player, true)
+    gs2.sprite[n].ceaseFireCounter = 0 // 스폰 무적 해제 (선정 게이트 1658, 키트 게이트 2007 등)
+    return n
+  }
+
+  beforeEach(() => {
+    gs = setupTestGame()
+  })
+
+  it('무기 픽업: 맨손 스프라이트가 반경 내 → applyWeaponByNum + thing.ammoCount 복원 (1895-1927)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    spr.applyWeaponByNum(guns[NOWEAPON].num, 1) // 맨손
+    expect(spr.weapon.num).toBe(guns[NOWEAPON].num)
+
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_DESERT_EAGLE, 255)
+    const t = gs.thing[ti]
+    t.ammoCount = 3 // DropWeapon이 저장했던 잔탄
+    t.timeOut = 0 // < GUNRESISTTIME - 30 (직후 재픽업 방지 게이트 통과)
+
+    const r = t.checkSpriteCollision()
+    expect(r).toBe(s)
+    // OBJECT_DESERT_EAGLE(5) - (OBJECT_NUM_FLAGS+1) = 1 → WeaponNumToIndex(1) = EAGLE
+    expect(spr.weapon.num).toBe(guns[EAGLE].num)
+    expect(spr.weapon.ammoCount).toBe(3)
+    expect(spr.weapon.fireIntervalPrev).toBe(spr.weapon.fireInterval)
+    expect(spr.weapon.fireIntervalCount).toBe(spr.weapon.fireInterval)
+    expect(t.active).toBe(false) // 픽업된 무기는 Kill (1721-1722)
+  })
+
+  it('무기 픽업 게이트: TimeOut >= GUNRESISTTIME-30 (갓 떨어진 무기)는 못 집는다 (1673)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    spr.applyWeaponByNum(guns[NOWEAPON].num, 1)
+
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_DESERT_EAGLE, 255)
+    const t = gs.thing[ti]
+    t.ammoCount = 3 // createThing이 timeOut = GUNRESISTTIME 세팅 (게이트에 걸린다)
+
+    const r = t.checkSpriteCollision()
+    expect(r).toBe(s) // 충돌 자체는 성립 (Result := j)
+    expect(spr.weapon.num).toBe(guns[NOWEAPON].num) // 하지만 픽업은 안 됨
+    expect(t.active).toBe(true)
+  })
+
+  it('메디킷: health<150일 때만 픽업, health=150 복구 + respawn (1971-1990)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    spr.health = 50
+
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_MEDICAL_KIT, 255)
+    const t = gs.thing[ti]
+
+    const r = t.checkSpriteCollision()
+    expect(r).toBe(s)
+    expect(spr.health).toBe(gs.startHealth) // 150 정확 복구
+    expect(spr.hasPack).toBe(true) // sv_healthcooldown 기본 2 > 0 (1978-1980)
+    expect(t.active).toBe(true) // Kill 후 case에서 Respawn — 재생성돼 살아있다 (1719/1983)
+    expect(t.team).toBe(TEAM_ALPHA) // Team := Sprite[j].Player.Team (1976)
+  })
+
+  it('메디킷: 풀피 스프라이트는 최근접 선정에서 제외 → 미픽업 (1653)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    expect(spr.health).toBe(gs.startHealth)
+
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_MEDICAL_KIT, 255)
+    const t = gs.thing[ti]
+
+    const r = t.checkSpriteCollision()
+    expect(r).toBe(-1) // 후보 자체가 없다
+    expect(t.active).toBe(true)
+    expect(spr.hasPack).toBe(false)
+  })
+
+  it('CTF 캡처: 적 깃발 소지자가 자기 베이스(자팀 깃발 InBase) 도달 → teamScore+1, player.flags+1, 깃발 리스폰 (812-938, 알파 833/브라보 885)', () => {
+    // ctf_Ash의 실제 깃발 스폰포인트 사용
+    const aSpawn = gs.map.spawnpoints[gs.map.flagSpawn[1]]
+    const bSpawn = gs.map.spawnpoints[gs.map.flagSpawn[2]]
+    const f1 = createThing(gs, vector2(aSpawn.x, aSpawn.y), 255, OBJECT_ALPHA_FLAG, 255)
+    const f2 = createThing(gs, vector2(bSpawn.x, bSpawn.y), 255, OBJECT_BRAVO_FLAG, 255)
+    expect(gs.thing[f1].inBase).toBe(true) // POINTMATCH가 아닌 깃발은 생성 시 InBase (162-163)
+
+    // 알파 팀 캐리어가 브라보 깃발을 든 채 알파 베이스에 서 있다
+    const s = spawnSpriteAt(gs, aSpawn.x, aSpawn.y, TEAM_ALPHA)
+    gs.thing[f2].holdingSprite = s
+
+    gs.thing[f2].update() // 캐리 부착(750-767) → 터치다운 판정(812-938)
+
+    expect(gs.teamScore[1]).toBe(1)
+    expect(gs.sprite[s].player!.flags).toBe(1)
+    // 캡처된 깃발은 Respawn — 소지 해제 + 브라보 베이스로 복귀 (930)
+    const t2 = gs.thing[f2]
+    expect(t2.active).toBe(true)
+    expect(t2.holdingSprite).toBe(0)
+    expect(gs.sprite[s].holdedThing).toBe(0)
+    expect(
+      vec2Length(vec2Subtract(t2.skeleton.pos[1], vector2(bSpawn.x, bSpawn.y))),
+    ).toBeLessThan(20) // RandomizeStart(±4/±4 지터) 근방
+  })
+
+  it('깃발 그랩: flagGrabCooldown 준수 (1726-1893, 1744)', () => {
+    const bSpawn = gs.map.spawnpoints[gs.map.flagSpawn[2]]
+    const f2 = createThing(gs, vector2(bSpawn.x, bSpawn.y), 255, OBJECT_BRAVO_FLAG, 255)
+    const t = gs.thing[f2]
+
+    // 알파 팀 스프라이트가 브라보 깃발 위에 서 있다
+    const s = spawnSpriteAt(gs, bSpawn.x, bSpawn.y, TEAM_ALPHA)
+    gs.sprite[s].flagGrabCooldown = 10
+
+    let r = t.checkSpriteCollision()
+    expect(r).toBe(s) // 충돌은 성립하지만
+    expect(t.holdingSprite).toBe(0) // 쿨다운 중 그랩 불가 (1744)
+    expect(t.timeOut).toBe(FLAG_TIMEOUT) // 그랩 전 공통 블록은 실행 (1740-1742)
+
+    gs.sprite[s].flagGrabCooldown = 0
+    r = t.checkSpriteCollision()
+    expect(r).toBe(s)
+    expect(t.holdingSprite).toBe(s) // 그랩 성공 (1749)
+    expect(t.staticType).toBe(false)
+  })
+
+  it('CTF 자팀 깃발 반환: 베이스 밖 자기 깃발 터치 → Respawn (1812-1836)', () => {
+    const bSpawn = gs.map.spawnpoints[gs.map.flagSpawn[2]]
+    // 브라보 깃발이 베이스 밖(멀리)에 떨어져 있다
+    const f2 = createThing(gs, vector2(bSpawn.x + 300, bSpawn.y), 255, OBJECT_BRAVO_FLAG, 255)
+    const t = gs.thing[f2]
+    t.inBase = false
+
+    const s = spawnSpriteAt(gs, bSpawn.x + 300, bSpawn.y, TEAM_BRAVO)
+    const r = t.checkSpriteCollision()
+    expect(r).toBe(s)
+    expect(t.holdingSprite).toBe(0) // 자팀 깃발은 들지 않고 즉시 반환
+    expect(vec2Length(vec2Subtract(t.skeleton.pos[1], vector2(bSpawn.x, bSpawn.y)))).toBeLessThan(20)
+  })
+
+  it('수류탄킷: TertiaryWeapon = 프라그 sv_maxgrenades발 + respawn (1993-2006)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    expect(spr.tertiaryWeapon.ammoCount).toBeLessThan(gs.svMaxgrenades + 1)
+    spr.tertiaryWeapon.ammoCount = 0
+
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_GRENADE_KIT, 255)
+    const t = gs.thing[ti]
+
+    const r = t.checkSpriteCollision()
+    expect(r).toBe(s)
+    expect(spr.tertiaryWeapon.num).toBe(guns[FRAGGRENADE].num)
+    expect(spr.tertiaryWeapon.ammoCount).toBe(gs.svMaxgrenades)
+    expect(t.active).toBe(true) // Respawn (2002)
+  })
+
+  it('보너스 키트 4종: flamer/predator/berserker/cluster 정확값 (2008-2106)', () => {
+    // flamer: 주무기 → 2번 슬롯 스택 + FLAMER 장착 + BonusTime/Style + 풀피
+    let s = spawnSpriteAt(gs, 100, 100)
+    let spr = gs.sprite[s]
+    spr.health = 90
+    let p = gs.spriteParts.pos[s]
+    let ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_FLAMER_KIT, 255)
+    expect(gs.thing[ti].checkSpriteCollision()).toBe(s)
+    expect(spr.weapon.num).toBe(guns[FLAMER].num)
+    expect(spr.bonusStyle).toBe(BONUS_FLAMEGOD)
+    expect(spr.bonusTime).toBe(FLAMERBONUSTIME) // 600
+    expect(spr.health).toBe(gs.startHealth)
+    expect(gs.thing[ti].active).toBe(false) // 보너스킷은 Kill만 (Respawn 없음)
+    spr.kill()
+
+    // predator: Alpha=PREDATORALPHA + BonusTime/Style + 풀피
+    s = spawnSpriteAt(gs, 200, 100)
+    spr = gs.sprite[s]
+    spr.health = 90
+    p = gs.spriteParts.pos[s]
+    ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_PREDATOR_KIT, 255)
+    expect(gs.thing[ti].checkSpriteCollision()).toBe(s)
+    expect(spr.alpha).toBe(PREDATORALPHA) // 5
+    expect(spr.bonusStyle).toBe(BONUS_PREDATOR)
+    expect(spr.bonusTime).toBe(PREDATORBONUSTIME) // 1500
+    expect(spr.health).toBe(gs.startHealth)
+    spr.kill()
+
+    // berserker
+    s = spawnSpriteAt(gs, 300, 100)
+    spr = gs.sprite[s]
+    spr.health = 90
+    p = gs.spriteParts.pos[s]
+    ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_BERSERK_KIT, 255)
+    expect(gs.thing[ti].checkSpriteCollision()).toBe(s)
+    expect(spr.bonusStyle).toBe(BONUS_BERSERKER)
+    expect(spr.bonusTime).toBe(BERSERKERBONUSTIME) // 900
+    expect(spr.health).toBe(gs.startHealth)
+    spr.kill()
+
+    // cluster: TertiaryWeapon = 클러스터 CLUSTER_GRENADES발
+    s = spawnSpriteAt(gs, 400, 100)
+    spr = gs.sprite[s]
+    p = gs.spriteParts.pos[s]
+    ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_CLUSTER_KIT, 255)
+    expect(gs.thing[ti].checkSpriteCollision()).toBe(s)
+    expect(spr.tertiaryWeapon.num).toBe(guns[CLUSTERGRENADE].num)
+    expect(spr.tertiaryWeapon.ammoCount).toBe(CLUSTER_GRENADES) // 3
+  })
+
+  it('베스트킷: Vest = DEFAULTVEST (2069-2081)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    expect(spr.vest).toBe(0)
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_VEST_KIT, 255)
+    expect(gs.thing[ti].checkSpriteCollision()).toBe(s)
+    expect(spr.vest).toBe(DEFAULTVEST) // 100
+    expect(gs.thing[ti].active).toBe(false)
+  })
+})
+
+/* ****************************************************************************
+ * T9: CheckStationaryGunCollision — 고정포 (Things.pas:2147-2310)
+ **************************************************************************** */
+
+describe('checkStationaryGunCollision — 고정포 (Things.pas:2147-2310)', () => {
+  let gs: GameState
+
+  function spawnSpriteAt(gs2: GameState, x: number, y: number): number {
+    const player = createTPlayer()
+    player.name = 'Gunner'
+    player.team = TEAM_ALPHA
+    const n = createSprite(gs2, vector2(x, y), vector2(0, 0), 1, 255, player, true)
+    gs2.sprite[n].ceaseFireCounter = 0
+    return n
+  }
+
+  beforeEach(() => {
+    gs = setupTestGame()
+  })
+
+  it('마운트: Stand 스프라이트가 반경 내 → Stat=Num + StaticType (2264-2295)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_STATIONARY_GUN, 255)
+    const t = gs.thing[ti]
+    expect(t.timeOut).toBe(60)
+    expect(t.checkStationaryGunCollision()).toBe(-1) // TimeOut > 0 → Exit (2158-2159)
+
+    t.timeOut = 0
+    const r = t.checkStationaryGunCollision()
+    expect(r).toBe(s)
+    expect(gs.sprite[s].stat).toBe(t.num)
+    expect(t.staticType).toBe(true)
+  })
+
+  it('발사: 마운트 상태 + Fire + Stand + FireInterval 틱 → M2 탄환 생성 + UseTime 증가 (2204-2253)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_STATIONARY_GUN, 255)
+    const t = gs.thing[ti]
+    t.timeOut = 0
+    t.checkStationaryGunCollision() // 마운트
+    expect(spr.stat).toBe(t.num)
+
+    spr.control.fire = true
+    spr.control.mouseAimX = Math.round(p.x + 200)
+    spr.control.mouseAimY = Math.round(p.y)
+    gs.mainTickCounter = guns[M2].fireInterval * 10 // mod FireInterval = 0
+
+    const before: boolean[] = []
+    for (let i = 1; i <= MAX_BULLETS; i++) before[i] = gs.bullet[i].active
+    const r = t.checkStationaryGunCollision()
+    expect(r).toBe(-1) // 발사 경로는 Result 대입 전에 Exit (2253)
+    let created = 0
+    for (let i = 1; i <= MAX_BULLETS; i++) {
+      if (gs.bullet[i].active && !before[i]) created++
+    }
+    expect(created).toBe(1)
+    expect(spr.useTime).toBe(1) // Inc(UseTime) (2252)
+  })
+
+  it('과열: UseTime > M2GUN_OVERHEAT → 발사 안 됨 (2209-2216)', () => {
+    const s = spawnSpriteAt(gs, 100, 100)
+    const spr = gs.sprite[s]
+    const p = gs.spriteParts.pos[s]
+    const ti = createThing(gs, vector2(p.x, p.y), 255, OBJECT_STATIONARY_GUN, 255)
+    const t = gs.thing[ti]
+    t.timeOut = 0
+    t.checkStationaryGunCollision()
+
+    spr.control.fire = true
+    spr.useTime = M2GUN_OVERHEAT + 1
+    gs.mainTickCounter = guns[M2].fireInterval * 10
+
+    const before: boolean[] = []
+    for (let i = 1; i <= MAX_BULLETS; i++) before[i] = gs.bullet[i].active
+    t.checkStationaryGunCollision()
+    let created = 0
+    for (let i = 1; i <= MAX_BULLETS; i++) {
+      if (gs.bullet[i].active && !before[i]) created++
+    }
+    expect(created).toBe(0)
+    expect(spr.useTime).toBe(M2GUN_OVERHEAT + 1) // 증가 없음
   })
 })

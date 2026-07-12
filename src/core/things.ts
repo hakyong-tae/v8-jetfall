@@ -20,10 +20,17 @@
 //   - CheckMapCollision (1307-1448): 깃발 바운스 FIXME(1364-1389)는 고치지 않고 보존.
 //   - Kill (1450-1463), CheckOutOfBounds (1465-1516), Respawn (1518-1572),
 //     MoveSkeleton (1574-1600).
-// * TODO(T9) 스텁 (시그니처만 보존, "무충돌" -1 반환):
-//   - CheckSpriteCollision (1602-2145): 픽업 판정/깃발 캡처·반환/키트 효과.
-//   - CheckStationaryGunCollision (2147-2310): 고정포 조작/발사.
-//   - Update의 터치다운 스코어링 블록 (812-938)도 CheckSpriteCollision과 한 몸이라 T9로.
+// * 채택(실동작, M2 Task 9):
+//   - CheckSpriteCollision (1602-2145): 전신 {$IFDEF SERVER} — 규약 8a 채택. 최근접 스프라이트
+//     선정(1620-1663), 깃발 그랩/반환(1726-1893 — CTF 완전, INF/HTF/PM은 구조+스텁), 무기
+//     (1895-1927), 활(1928-1970), 키트 7종(1971-2106), 나이프·톱·LAW(2107-2139).
+//     Kill→case→Respawn 이중 순서(1719-1720) 그대로 보존. 콘솔/BigMessage 문자열과
+//     GrabbedInBase/GrabsPerSecond/ScoresPerSecond(ServerLoop.pas:400 안티매스플래그 통계)는
+//     생략+주석, ServerThingTaken은 TODO(M3) NET, 봇챗(913-919)은 생략 (계획서 T9 명세).
+//   - Update의 터치다운 스코어링 블록 (812-938): 캡처 스코어링 + SortPlayers 훅 + 서바이벌
+//     라운드 종료. ServerFlagInfo는 TODO(M3) NET.
+//   - CheckStationaryGunCollision (2147-2310): 고정포 마운트/조준/발사/과열. 클라 시그니처의
+//     ClientCheck 파라미터는 제거 — 서버는 항상 풀 체크 (계획서 T9 "단일 시그니처").
 // * 주석 처리 (shape만 보존):
 //   - 네트 전송 ServerThingMustSnapshot/ServerThingTaken/ServerFlagInfo: TODO(M3) NET.
 //   - Render/PolygonsRender (1035-1305): 클라 렌더 전용 — web/bulletsrender.ts(T13) 소관.
@@ -35,8 +42,8 @@
 // 접근 규약: sprites.ts/bullets.ts와 동일한 gs-보관 클래스 패턴. 자유 함수(createThing/
 // spawnBoxes/randomizeStart)는 gs를 첫 인자로 받는다.
 import { type TVector2, vector2, cloneVec2, vec2Add, vec2Subtract, vec2Scale, vec2Normalize, vec2Length } from './vector'
-import { random, pascalRound } from './pascal'
-import { distance } from './calc'
+import { random, pascalRound, trunc } from './pascal'
+import { distance, distanceVec2 } from './calc'
 import { ParticleSystem, NUM_PARTICLES } from './parts'
 import type { TMapPolygon } from './mapfile'
 import {
@@ -57,10 +64,24 @@ import {
   MAX_THINGS,
   MAX_SPRITES,
   BASE_RADIUS,
+  TOUCHDOWN_RADIUS,
   FLAG_STAND_FORCEUP,
   FLAG_HOLDING_FORCEUP,
+  BOT,
 } from './sprites'
-import { guns, BOW, BOW2 } from './weapons'
+import {
+  guns,
+  BOW,
+  BOW2,
+  FLAMER,
+  M2,
+  NOWEAPON,
+  FRAGGRENADE,
+  CLUSTERGRENADE,
+  weaponNumToIndex,
+} from './weapons'
+import { createBullet } from './bullets'
+import { createSpark } from './sparks'
 import {
   OBJECT_ALPHA_FLAG,
   OBJECT_BRAVO_FLAG,
@@ -100,11 +121,40 @@ import {
   STAT_RADIUS,
   MINMOVEDELTA,
   GAMESTYLE_INF,
+  GAMESTYLE_CTF,
+  GAMESTYLE_POINTMATCH,
+  GAMESTYLE_HTF,
   TEAM_ALPHA,
   TEAM_BRAVO,
+  BONUS_NONE,
+  BONUS_FLAMEGOD,
+  BONUS_PREDATOR,
+  BONUS_BERSERKER,
+  FLAMERBONUSTIME,
+  PREDATORBONUSTIME,
+  BERSERKERBONUSTIME,
+  PREDATORALPHA,
+  DEFAULTVEST,
+  CLUSTER_GRENADES,
+  OBJECT_NUM_FLAGS,
+  OBJECT_NUM_NONWEAPON,
+  M2GUN_OVERHEAT,
+  M2GUN_OVERAIM,
   SFX_WEAPONHIT,
   SFX_KIT_FALL,
   SFX_FLAG,
+  SFX_CAPTURE,
+  SFX_TAKEGUN,
+  SFX_TAKEBOW,
+  SFX_TAKEMEDIKIT,
+  SFX_PICKUPGUN,
+  SFX_GODFLAME,
+  SFX_PREDATOR,
+  SFX_VESTTAKE,
+  SFX_BERSERKER,
+  SFX_M2OVERHEAT,
+  SFX_M2FIRE,
+  SFX_M2USE,
 } from './constants'
 import type { GameState } from './state'
 
@@ -288,19 +338,106 @@ export class TThing {
         break
     }
 
-    // check if flag is touchdown {$IFDEF SERVER} (812-938)
-    // TODO(T9): 터치다운 스코어링 — 상대 깃발을 든 채 자기 베이스의(InBase) 깃발과
-    // TOUCHDOWN_RADIUS 이내 접근 시 Player.Flags/TeamScore[1..2] 증가(INF 보정 837-843 포함),
-    // SortPlayers, Respawn, survival 라운드 종료(921-935). CheckSpriteCollision(픽업)과 한 몸이라
-    // T9에서 함께 포팅한다.
+    // check if flag is touchdown {$IFDEF SERVER} (812-938) — 규약 8a 채택
+    if (this.style === OBJECT_ALPHA_FLAG || this.style === OBJECT_BRAVO_FLAG) {
+      if (this.holdingSprite > 0 && this.holdingSprite < MAX_SPRITES + 1) {
+        if (gs.sprite[this.holdingSprite].player!.team !== this.style) {
+          // check if other flag is inbase
+          for (let i = 1; i <= MAX_THINGS; i++) {
+            if (
+              gs.thing[i].active &&
+              gs.thing[i].inBase &&
+              i !== this.num &&
+              gs.thing[i].holdingSprite === 0
+            ) {
+              // check if flags are close
+              if (distanceVec2(this.skeleton.pos[1], gs.thing[i].skeleton.pos[1]) < TOUCHDOWN_RADIUS) {
+                if (gs.sprite[this.holdingSprite].player!.team === TEAM_ALPHA) {
+                  // {$IFNDEF SERVER} SFX_INFILTMUS/SFX_CTF (825-830) — 포지션 없는 UI 징글,
+                  // 생략+주석 (web M4; sprites.ts SFX_BOOMHEADSHOT 선례)
+
+                  gs.sprite[this.holdingSprite].player!.flags =
+                    gs.sprite[this.holdingSprite].player!.flags + 1
+                  gs.teamScore[1] = gs.teamScore[1] + 1
+
+                  const b = vector2(0, 0)
+                  if (gs.svGamemode === GAMESTYLE_INF) {
+                    gs.teamScore[1] = gs.teamScore[1] + (gs.svInfRedaward - 1)
+                    // penalty
+                    if (gs.playersTeamNum[1] > gs.playersTeamNum[2]) {
+                      gs.teamScore[1] = gs.teamScore[1] - 5 * (gs.playersTeamNum[1] - gs.playersTeamNum[2])
+                    }
+                    if (gs.teamScore[1] < 0) gs.teamScore[1] = 0
+
+                    // {$IFNDEF SERVER} flame it (845-855) — 규약 12: CreateSpark 채택
+                    for (let j = 1; j <= 10; j++) {
+                      const a = vector2(
+                        gs.thing[i].skeleton.pos[2].x - 10 + random(20),
+                        gs.thing[i].skeleton.pos[2].y - 10 + random(20),
+                      )
+                      createSpark(gs, a, b, 36, 0, 35)
+                      if (random(2) === 0) createSpark(gs, a, b, 37, 0, 75)
+                    }
+                  }
+
+                  // {$IFNDEF SERVER} cap spark (859-862) — 규약 12: CreateSpark 채택
+                  createSpark(gs, gs.thing[i].skeleton.pos[2], b, 61, this.holdingSprite, 18)
+
+                  gs.sortPlayers?.()
+                  // {$IFDEF SERVER} mainconsole '%s scores for Alpha Team' — 콘솔 UI, 생략.
+                  // Inc(ScoresPerSecond) — 안티매스플래그 통계(ServerLoop.pas:400), 생략+주석.
+
+                  // TODO(M3) NET: ServerFlagInfo(CAPTURERED, HoldingSprite)
+                }
+                if (gs.sprite[this.holdingSprite].player!.team === TEAM_BRAVO) {
+                  // {$IFNDEF SERVER} PlaySound(SFX_CTF) (881-883) — 포지션 없는 UI 징글, 생략
+
+                  gs.sprite[this.holdingSprite].player!.flags =
+                    gs.sprite[this.holdingSprite].player!.flags + 1
+                  gs.teamScore[2] = gs.teamScore[2] + 1
+
+                  // {$IFNDEF SERVER} cap spark (888-893) — 규약 12: CreateSpark 채택
+                  const b = vector2(0, 0)
+                  createSpark(gs, gs.thing[i].skeleton.pos[2], b, 61, this.holdingSprite, 15)
+
+                  gs.sortPlayers?.()
+                  // {$IFDEF SERVER} mainconsole '%s scores for Bravo Team' — 콘솔 UI, 생략.
+                  // Inc(ScoresPerSecond) — 안티매스플래그 통계, 생략+주석.
+
+                  // TODO(M3) NET: ServerFlagInfo(CAPTUREBLUE, HoldingSprite)
+                }
+                // {$IFDEF SCRIPT} OnFlagScore — 스크립트 없음, 생략.
+                // bots_chat ChatWinning (913-919) — 봇챗 생략 (계획서 T9 명세).
+
+                this.respawn()
+
+                if (gs.svSurvivalmode) {
+                  gs.survivalEndRound = true
+
+                  // Everyone should die in realistic after cap
+                  // because if nobody is dead the round will not end
+                  for (let j = 1; j <= MAX_SPRITES; j++) {
+                    if (gs.sprite[j].active && !gs.sprite[j].deadMeat) {
+                      // {$IFDEF SERVER}4000{$ELSE}150{$ENDIF} — 서버값 채택 (규약 8a)
+                      gs.sprite[j].healthHit(4000, j, 1, -1, gs.sprite[j].skeleton.pos[12])
+                      gs.sprite[j].player!.deaths--
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
 
     if (this.style === OBJECT_STATIONARY_GUN) {
-      this.checkStationaryGunCollision() // T9 스텁 (943-946)
+      this.checkStationaryGunCollision() // (943-946) — 서버는 항상 풀 체크 (ClientCheck 없음)
     }
 
     // check if sprite grabs thing {$IFDEF SERVER} (949-952)
     if (this.style !== OBJECT_STATIONARY_GUN) {
-      this.checkSpriteCollision() // T9 스텁
+      this.checkSpriteCollision()
     }
 
     if (this.style === OBJECT_RAMBO_BOW) {
@@ -717,17 +854,513 @@ export class TThing {
     }
   }
 
-  // Things.pas:1602-2145 {$IFDEF SERVER} TThing.CheckSpriteCollision — TODO(T9): 픽업 판정
-  // (무기/키트/활 집기), 깃발 캡처·반환(CTF/INF/HTF/PM 분기), 보너스 키트 효과. 지금은
-  // "충돌 없음"(-1)만 반환한다 (Result := -1 초기값과 동일).
+  // Things.pas:1602-2145 {$IFDEF SERVER} TThing.CheckSpriteCollision — 규약 8a 채택.
+  // 픽업 판정(무기/키트/활), 깃발 그랩·반환(CTF 완전 / INF·HTF·PM 구조+스텁), 키트 7종 효과.
+  // ⚠ Kill(1721-1722) → case의 효과 적용 → 키트류 Respawn(재Kill 포함) 이중 순서 그대로 보존
+  //   (리스크 지도 3번 — 순서 재배열 금지).
+  // 콘솔/BigMessage 문자열(CapColor/SmallCapText류)과 GrabbedInBase/GrabsPerSecond(HTF·CTF
+  // 그랩 통계 — ServerLoop.pas:400 안티매스플래그 검사 전용)는 생략+주석.
   checkSpriteCollision(): number {
-    return -1
+    const gs = this.gs
+
+    let result = -1
+
+    let a = vec2Subtract(this.skeleton.pos[1], this.skeleton.pos[2])
+    const k = vec2Length(a) / 2
+    a = vec2Normalize(a)
+    a = vec2Scale(a, -k)
+    let pos = vec2Add(this.skeleton.pos[1], a)
+
+    // iterate through sprites
+    let closestdist = 9999999
+    let closestplayer = -1
+    for (let j = 1; j <= MAX_SPRITES; j++) {
+      if (gs.sprite[j].active && !gs.sprite[j].deadMeat && gs.sprite[j].isNotSpectator()) {
+        let colPos = cloneVec2(gs.spriteParts.pos[j])
+        let norm = vec2Subtract(pos, colPos)
+        if (vec2Length(norm) >= this.radius) {
+          // 원본 그대로: pos를 재대입한 채 다음 반복으로 넘어간다 (1638-1647 — 루프 캐리 상태)
+          pos = cloneVec2(this.skeleton.pos[1])
+          colPos = cloneVec2(gs.spriteParts.pos[j])
+          norm = vec2Subtract(pos, colPos)
+
+          if (vec2Length(norm) >= this.radius) {
+            pos = cloneVec2(this.skeleton.pos[2])
+            colPos = cloneVec2(gs.spriteParts.pos[j])
+            norm = vec2Subtract(pos, colPos)
+          }
+        }
+
+        const dist = vec2Length(norm)
+        if (dist < this.radius) {
+          if (dist < closestdist) {
+            // {$IFDEF SERVER} 메디킷 풀피/수류탄킷 풀수류탄 후보 제외 (1652-1655) — 규약 8a
+            if (!(this.style === OBJECT_MEDICAL_KIT && gs.sprite[j].health === gs.startHealth)) {
+              if (
+                !(
+                  this.style === OBJECT_GRENADE_KIT &&
+                  gs.sprite[j].tertiaryWeapon.ammoCount === gs.svMaxgrenades &&
+                  gs.sprite[j].tertiaryWeapon.num === guns[FRAGGRENADE].num
+                )
+              ) {
+                if (!(this.style < OBJECT_USSOCOM && gs.sprite[j].ceaseFireCounter > 0)) {
+                  closestdist = dist
+                  closestplayer = j
+                }
+              }
+            }
+          }
+        }
+      }
+    } // for j
+
+    let j = closestplayer
+
+    if (j > 0) {
+      // collision
+      const spr = gs.sprite[j]
+
+      // 픽업 성립 시 사운드 + 씽 소멸 (1668-1722)
+      if (
+        (((this.style > OBJECT_POINTMATCH_FLAG &&
+          this.style < OBJECT_RAMBO_BOW &&
+          spr.bodyAnimation.id !== gs.anims.change.id) ||
+          (this.style > OBJECT_PARACHUTE && spr.bodyAnimation.id !== gs.anims.change.id)) &&
+          spr.weapon.num === guns[NOWEAPON].num &&
+          spr.brain.favWeapon !== guns[NOWEAPON].num &&
+          this.timeOut < GUNRESISTTIME - 30) ||
+        (this.style === 15 /* OBJECT_RAMBO_BOW — 원본 그대로 매직넘버 (1675) */ &&
+          spr.weapon.num === guns[NOWEAPON].num &&
+          this.timeOut < gs.svRespawntime * FLAG_TIMEOUT - 100) ||
+        (this.style === OBJECT_MEDICAL_KIT &&
+          spr.health < gs.startHealth &&
+          /* {$IFDEF SERVER} */ !spr.hasPack) ||
+        (this.style === OBJECT_GRENADE_KIT &&
+          spr.tertiaryWeapon.ammoCount < gs.svMaxgrenades &&
+          (spr.tertiaryWeapon.num !== guns[CLUSTERGRENADE].num || spr.tertiaryWeapon.ammoCount === 0)) ||
+        (((this.style === OBJECT_FLAMER_KIT &&
+          spr.weapon.num !== guns[BOW].num &&
+          spr.weapon.num !== guns[BOW2].num) ||
+          this.style === OBJECT_PREDATOR_KIT ||
+          this.style === OBJECT_BERSERK_KIT) &&
+          spr.bonusStyle === BONUS_NONE &&
+          spr.ceaseFireCounter < 1) ||
+        (this.style === OBJECT_VEST_KIT && /* {$IFDEF SERVER} */ spr.vest < DEFAULTVEST) ||
+        (this.style === OBJECT_CLUSTER_KIT &&
+          /* {$IFDEF SERVER} */ (spr.tertiaryWeapon.num === guns[FRAGGRENADE].num ||
+            spr.tertiaryWeapon.ammoCount === 0))
+      ) {
+        // {$IFNDEF SERVER} take sound (1698-1717) — 규약 11 훅으로 채택
+        if (
+          (this.style > OBJECT_POINTMATCH_FLAG && this.style < OBJECT_RAMBO_BOW) ||
+          this.style > OBJECT_PARACHUTE
+        ) {
+          gs.playSound(SFX_TAKEGUN, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_RAMBO_BOW) {
+          gs.playSound(SFX_TAKEBOW, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_MEDICAL_KIT) {
+          gs.playSound(SFX_TAKEMEDIKIT, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_GRENADE_KIT) {
+          gs.playSound(SFX_PICKUPGUN, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_FLAMER_KIT) {
+          gs.playSound(SFX_GODFLAME, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_PREDATOR_KIT) {
+          gs.playSound(SFX_PREDATOR, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_VEST_KIT) {
+          gs.playSound(SFX_VESTTAKE, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_BERSERK_KIT) {
+          gs.playSound(SFX_BERSERKER, gs.spriteParts.pos[spr.num])
+        } else if (this.style === OBJECT_CLUSTER_KIT) {
+          gs.playSound(SFX_PICKUPGUN, gs.spriteParts.pos[spr.num])
+        }
+
+        // TODO(M3) NET: ServerThingTaken(Num, j)
+        if (this.style !== OBJECT_RAMBO_BOW) {
+          this.kill()
+        }
+      }
+
+      // {$IFDEF SERVER} KnifeCan[j] := True (1723) — 클라 발사 패킷 검증 전역
+      //   (NetworkServerBullet.pas:247), TODO(M3) NET (sprites.ts와 동일 처리).
+
+      switch (this.style) {
+        case OBJECT_ALPHA_FLAG:
+        case OBJECT_BRAVO_FLAG:
+        case OBJECT_POINTMATCH_FLAG: {
+          if (gs.svGamemode === GAMESTYLE_INF && this.style === OBJECT_ALPHA_FLAG) {
+            return result // Exit (1729-1730) — Result는 아직 -1 (원본 그대로)
+          }
+
+          // Dont allow flag cap when round has ended
+          if (
+            gs.survivalEndRound &&
+            (this.style === OBJECT_ALPHA_FLAG ||
+              this.style === OBJECT_BRAVO_FLAG ||
+              this.style === OBJECT_POINTMATCH_FLAG)
+          ) {
+            return result // Exit (1733-1738)
+          }
+
+          this.staticType = false
+          this.timeOut = FLAG_TIMEOUT
+          this.interest = FLAG_INTEREST_TIME
+
+          if (spr.player!.team !== this.style || !this.inBase) {
+            if (this.holdingSprite === 0 && spr.flagGrabCooldown < 1) {
+              // {$IFNDEF SERVER} capture sound (1746-1749) — 규약 11 훅으로 채택
+              gs.playSound(SFX_CAPTURE, this.skeleton.pos[1])
+              this.holdingSprite = j
+              // TODO(M3) NET: ServerThingTaken(Num, j)
+
+              // CapColor/SmallCapTextStr (1753-1771) — 콘솔 메시지 색/문자열, 생략.
+
+              switch (gs.svGamemode) {
+                case GAMESTYLE_POINTMATCH:
+                case GAMESTYLE_HTF:
+                  // '%s got the Yellow Flag' 콘솔 — 생략.
+                  // HTF: GrabbedInBase/GrabsPerSecond (1779-1782) — 안티매스플래그 통계, 생략.
+                  // TODO(M2후속): HTF 틱 스코어는 T10 ⑫에서.
+                  break
+                case GAMESTYLE_CTF:
+                  if (spr.player!.team === this.style) {
+                    // 자팀 깃발 반환 — '%s returned the Red/Blue Flag' 콘솔 생략 (1794-1815)
+                    this.respawn()
+                  } else {
+                    // 적팀 깃발 캡처 — '%s captured the Blue/Red Flag' 콘솔 생략 (1818-1843).
+                    // GrabbedInBase := Thing[2/1].InBase + Inc(GrabsPerSecond) — 통계, 생략.
+                  }
+                  break
+                case GAMESTYLE_INF:
+                  if (spr.player!.team === this.style) {
+                    // '%s returned the Objective' (TEAM_BRAVO) 콘솔/통계 생략 (1846-1859)
+                    this.respawn()
+                  } else {
+                    // '%s captured the Objective' (TEAM_ALPHA) 콘솔/통계 생략 (1863-1877)
+                  }
+                  break
+              }
+
+              // mainconsole/BigMessage 출력 (1881-1890) — 생략.
+            }
+          }
+          break
+        }
+
+        case OBJECT_USSOCOM:
+        case OBJECT_DESERT_EAGLE:
+        case OBJECT_HK_MP5:
+        case OBJECT_AK74:
+        case OBJECT_STEYR_AUG:
+        case OBJECT_SPAS12:
+        case OBJECT_RUGER77:
+        case OBJECT_M79:
+        case OBJECT_BARRET_M82A1:
+        case OBJECT_MINIMI:
+        case OBJECT_MINIGUN:
+          if (spr.weapon.num === guns[NOWEAPON].num) {
+            if (spr.brain.favWeapon !== guns[NOWEAPON].num) {
+              if (spr.bodyAnimation.id !== gs.anims.change.id) {
+                if (this.timeOut < GUNRESISTTIME - 30) {
+                  // Objects 1-3 are flags, so we need for WeaponIndex subtract by flags+1
+                  const weaponIndex = weaponNumToIndex(this.style - (OBJECT_NUM_FLAGS + 1))
+                  // {$IFDEF SCRIPT} OnWeaponChange — 스크립트 없음, 생략.
+                  spr.applyWeaponByNum(guns[weaponIndex].num, 1)
+                  spr.weapon.ammoCount = this.ammoCount
+                  spr.weapon.fireIntervalPrev = spr.weapon.fireInterval
+                  spr.weapon.fireIntervalCount = spr.weapon.fireInterval
+                  // {$IFNDEF SERVER} ClientSpriteSnapshot — 클라 네트, 생략.
+                }
+              }
+            }
+          }
+          break
+
+        case OBJECT_RAMBO_BOW:
+          if (spr.weapon.num === guns[NOWEAPON].num) {
+            if (spr.bodyAnimation.id !== gs.anims.change.id) {
+              if (this.timeOut < FLAG_TIMEOUT - 100) {
+                spr.applyWeaponByNum(guns[BOW].num, 1)
+                spr.applyWeaponByNum(guns[BOW2].num, 2)
+                // BUG: shouldn't this be Guns[BOW].Ammo? Somebody might've set more than one
+                // (원본 주석 그대로 보존 — 1948)
+                spr.weapon.ammoCount = 1
+                spr.weapon.fireIntervalPrev = spr.weapon.fireInterval
+                spr.weapon.fireIntervalCount = spr.weapon.fireInterval
+                spr.wearHelmet = 1
+                // {$IFNDEF SERVER} ClientSpriteSnapshot + 'You got the Bow!' BigMessage — 생략.
+              }
+            }
+          }
+          break
+
+        case OBJECT_MEDICAL_KIT:
+          if (spr.health < gs.startHealth) {
+            // pickup health pack
+            if (!spr.hasPack) {
+              // {$IFDEF SERVER} (1975)
+              this.team = spr.player!.team
+              // {$IFDEF SERVER} (1978-1980)
+              if (gs.svHealthcooldown > 0) {
+                spr.hasPack = true
+              }
+              spr.health = gs.startHealth
+              this.respawn()
+            }
+          }
+          break
+
+        case OBJECT_GRENADE_KIT:
+          if (
+            spr.tertiaryWeapon.ammoCount < gs.svMaxgrenades &&
+            (spr.tertiaryWeapon.num !== guns[CLUSTERGRENADE].num || spr.tertiaryWeapon.ammoCount === 0)
+          ) {
+            this.team = spr.player!.team
+            spr.tertiaryWeapon = { ...guns[FRAGGRENADE] } // TertiaryWeapon := Guns[FRAGGRENADE] (record 복사)
+            spr.tertiaryWeapon.ammoCount = gs.svMaxgrenades
+            this.respawn()
+          }
+          break
+
+        case OBJECT_FLAMER_KIT:
+          if (spr.bonusStyle === BONUS_NONE && spr.ceaseFireCounter < 1) {
+            if (spr.weapon.num !== guns[BOW].num && spr.weapon.num !== guns[BOW2].num) {
+              // {$IFNDEF SERVER}, -1, True{$ENDIF} — 서버 시그니처(기본 인자) 채택 (규약 8a)
+              spr.applyWeaponByNum(spr.weapon.num, 2)
+              spr.applyWeaponByNum(guns[FLAMER].num, 1)
+              spr.bonusTime = FLAMERBONUSTIME
+              spr.bonusStyle = BONUS_FLAMEGOD
+              // {$IFNDEF SERVER} 'Flame God Mode!' BigMessage — 생략.
+              spr.health = gs.startHealth
+            }
+          }
+          break
+
+        case OBJECT_PREDATOR_KIT:
+          if (spr.bonusStyle === BONUS_NONE && spr.ceaseFireCounter < 1) {
+            spr.alpha = PREDATORALPHA
+            spr.bonusTime = PREDATORBONUSTIME
+            spr.bonusStyle = BONUS_PREDATOR
+            // {$IFNDEF SERVER} 'Predator Mode!' BigMessage — 생략.
+            spr.health = gs.startHealth
+          }
+          break
+
+        case OBJECT_VEST_KIT:
+          spr.vest = DEFAULTVEST
+          // {$IFNDEF SERVER} 'Bulletproof Vest!' BigMessage — 생략.
+          break
+
+        case OBJECT_BERSERK_KIT:
+          // 원본 그대로 BonusStyle = 0 리터럴 비교 (2082 — BONUS_NONE과 동치)
+          if (spr.bonusStyle === 0 && spr.ceaseFireCounter < 1) {
+            spr.bonusStyle = BONUS_BERSERKER
+            spr.bonusTime = BERSERKERBONUSTIME
+            // {$IFNDEF SERVER} 'Berserker Mode!' BigMessage — 생략.
+            spr.health = gs.startHealth
+          }
+          break
+
+        case OBJECT_CLUSTER_KIT:
+          // {$IFDEF SERVER} 게이트 (2096-2097) — 규약 8a 채택
+          if (spr.tertiaryWeapon.num === guns[FRAGGRENADE].num || spr.tertiaryWeapon.ammoCount === 0) {
+            spr.tertiaryWeapon = { ...guns[CLUSTERGRENADE] } // record 복사
+            spr.tertiaryWeapon.ammoCount = CLUSTER_GRENADES
+            // {$IFNDEF SERVER} 'Cluster grenades!' BigMessage — 생략.
+          }
+          break
+
+        case OBJECT_COMBAT_KNIFE:
+        case OBJECT_CHAINSAW:
+        case OBJECT_LAW:
+          if (spr.weapon.num === guns[NOWEAPON].num) {
+            if (spr.brain.favWeapon !== guns[NOWEAPON].num) {
+              if (spr.bodyAnimation.id !== gs.anims.change.id) {
+                if (this.timeOut < GUNRESISTTIME - 30) {
+                  // There are in total OBJECT_NUM_NONWEAPON non-weapon objects before the
+                  // knife so we need to subtract it+1 for the WeaponIndex (like before)
+                  const weaponIndex = weaponNumToIndex(this.style - (OBJECT_NUM_NONWEAPON + 1))
+                  spr.applyWeaponByNum(guns[weaponIndex].num, 1)
+                  spr.weapon.ammoCount = this.ammoCount
+                  spr.weapon.fireIntervalPrev = spr.weapon.fireInterval
+                  spr.weapon.fireIntervalCount = spr.weapon.fireInterval
+                  // {$IFNDEF SERVER} ClientSpriteSnapshot — 클라 네트, 생략.
+                }
+              }
+            }
+          }
+          break
+      }
+
+      result = j
+    }
+
+    return result
   }
 
-  // Things.pas:2147-2310 TThing.CheckStationaryGunCollision — TODO(T9): 고정포 점유/조준/발사
-  // (CreateBullet(M2탄) 호출 포함, sv_stationaryguns). 지금은 "충돌 없음"(-1)만 반환한다.
+  // Things.pas:2147-2310 TThing.CheckStationaryGunCollision — 고정포 마운트/조준/발사/과열.
+  // 클라 시그니처의 ClientCheck 파라미터({$IFNDEF SERVER})는 제거 — 서버는 마운트 루프(2266-)를
+  // 항상 실행한다 (계획서 T9 "단일 시그니처로 항상 풀 체크").
   checkStationaryGunCollision(): number {
-    return -1
+    const gs = this.gs
+
+    let result = -1
+    if (this.timeOut > 0) {
+      return result
+    }
+
+    // Stat overheat less
+    if (this.interest > M2GUN_OVERHEAT + 1) {
+      this.interest = 0
+    }
+
+    if (this.interest > 0) {
+      if (gs.mainTickCounter % 8 === 0) {
+        this.interest--
+      }
+    }
+
+    let pos = cloneVec2(this.skeleton.pos[1])
+
+    for (let i = 1; i <= MAX_SPRITES; i++) {
+      if (gs.sprite[i].active && !gs.sprite[i].deadMeat && gs.sprite[i].isNotSpectator()) {
+        if (gs.sprite[i].stat === this.num) {
+          const colPos = cloneVec2(gs.spriteParts.pos[i])
+          let norm = vec2Subtract(pos, colPos)
+          if (vec2Length(norm) < this.radius) {
+            // collision — 조작 중인 스프라이트가 반경 안에 있다
+            if (gs.sprite[i].player!.controlMethod === BOT) {
+              if (gs.sprite[i].brain.camper > 0) {
+                if (gs.sprite[i].holdedThing === 0) {
+                  gs.sprite[i].control.right = false
+                  gs.sprite[i].control.left = false
+                  gs.sprite[i].control.up = false
+                  gs.sprite[i].control.down = false
+                  if (gs.sprite[i].legsAnimation.id === gs.anims.prone.id) {
+                    gs.sprite[i].control.prone = true
+                  }
+                }
+              }
+            }
+
+            this.staticType = true
+
+            // 조준 — 마우스 방향으로 포신(Pos[4]) 회전 (2192-2199)
+            pos.x = gs.sprite[i].control.mouseAimX
+            pos.y = gs.sprite[i].control.mouseAimY
+            norm = vec2Subtract(pos, gs.sprite[i].skeleton.pos[15])
+            norm = vec2Normalize(norm)
+            norm = vec2Scale(norm, 3)
+            norm.x = -norm.x
+            this.skeleton.oldPos[4] = cloneVec2(this.skeleton.pos[4])
+            this.skeleton.pos[4] = vec2Add(this.skeleton.pos[1], norm)
+
+            this.interest = gs.sprite[i].useTime
+
+            if (gs.sprite[i].control.fire) {
+              if (gs.sprite[i].legsAnimation.id === gs.anims.stand.id) {
+                if (gs.mainTickCounter % guns[M2].fireInterval === 0) {
+                  if (gs.sprite[i].useTime > M2GUN_OVERHEAT) {
+                    // {$IFNDEF SERVER} 과열음 (2211-2213) — 규약 11 훅으로 채택
+                    gs.playSound(SFX_M2OVERHEAT, gs.spriteParts.pos[i])
+                    return result // Exit (2214)
+                  }
+
+                  let k = 0
+                  if (gs.sprite[i].useTime > M2GUN_OVERAIM) {
+                    k = trunc(gs.sprite[i].useTime / 11) // UseTime div 11
+                    k = -k + random(2 * k)
+                  }
+
+                  pos.x = this.skeleton.pos[4].x
+                  pos.y = this.skeleton.pos[4].y
+                  norm = vec2Subtract(pos, this.skeleton.pos[1])
+                  norm = vec2Normalize(norm)
+                  norm = vec2Scale(norm, guns[M2].speed)
+                  norm.x = -norm.x
+                  norm.x = norm.x + k
+                  norm.y = norm.y + k
+                  pos.x = this.skeleton.pos[4].x + 4
+                  pos.y = this.skeleton.pos[4].y - 10
+
+                  createBullet(gs, pos, norm, guns[M2].num, i, 255, guns[M2].hitMultiply, true, false)
+
+                  // {$IFNDEF SERVER} 발사 스파크 2종 + 발사음 (2237-2249) — 규약 12/11 채택
+                  pos = vec2Add(pos, norm)
+                  norm = vec2Scale(norm, 0.1)
+                  createSpark(gs, pos, norm, 35, i, 15) // smoke
+
+                  const colPos2 = cloneVec2(norm)
+                  norm.y = -gs.sprite[i].direction * norm.x
+                  norm.x = gs.sprite[i].direction * colPos2.y
+                  norm = vec2Scale(norm, 0.2)
+                  pos.x = this.skeleton.pos[3].x + 18
+                  pos.y = this.skeleton.pos[3].y - 20
+                  createSpark(gs, pos, norm, 22, i, 255) // hull
+
+                  gs.playSound(SFX_M2FIRE, gs.spriteParts.pos[i])
+
+                  gs.sprite[i].useTime++
+                }
+              }
+            }
+            return result // Exit (2253) — 조작 유지 경로는 Result = -1 그대로 (원본 그대로)
+          } else {
+            gs.sprite[i].stat = 0
+            this.staticType = false
+            return result // Exit (2258)
+          }
+        }
+      }
+    }
+
+    // iterate through sprites — 마운트 시도. {$IFNDEF SERVER}if ClientCheck then{$ENDIF}
+    // 게이트는 서버에서 무조건 실행 (규약 13).
+    if (!this.staticType) {
+      for (let j = 1; j <= MAX_SPRITES; j++) {
+        if (gs.sprite[j].active && !gs.sprite[j].deadMeat && gs.sprite[j].isNotSpectator()) {
+          const colPos = cloneVec2(gs.spriteParts.pos[j])
+          const norm = vec2Subtract(pos, colPos)
+          if (vec2Length(norm) < this.radius) {
+            // collision
+            switch (this.style) {
+              case OBJECT_STATIONARY_GUN: {
+                if (gs.sprite[j].player!.controlMethod === BOT) {
+                  if (gs.sprite[j].brain.camper > 0) {
+                    gs.sprite[j].control.right = false
+                    gs.sprite[j].control.left = false
+                    gs.sprite[j].control.up = false
+                    gs.sprite[j].control.down = false
+                    gs.sprite[j].legsApplyAnimation(gs.anims.stand, 1)
+                  }
+                }
+
+                if (gs.sprite[j].legsAnimation.id === gs.anims.stand.id) {
+                  // {$IFNDEF SERVER} 마운트음 (2281-2283) — 규약 11 훅으로 채택
+                  gs.playSound(SFX_M2USE, gs.spriteParts.pos[j])
+
+                  this.staticType = true
+                  gs.sprite[j].stat = this.num
+                  gs.sprite[j].brain.onePlaceCount = 0
+                  // TODO(M3) NET: ServerThingTaken(Num, j)
+                }
+                break
+              }
+            }
+
+            result = j
+            return result // Exit (2299)
+          } else {
+            if (gs.sprite[j].stat === this.num) {
+              gs.sprite[j].stat = 0
+            }
+          }
+
+          this.staticType = false
+        }
+      } // for j
+    }
+
+    return result
   }
 
   // Things.pas:1035-1305 {$IFNDEF SERVER} Render/PolygonsRender — 클라 렌더 전용, core에는

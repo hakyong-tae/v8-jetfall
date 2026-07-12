@@ -365,6 +365,9 @@ export interface TPlayer {
   camera: number
   kills: number
   deaths: number
+  // Net.pas TPlayer.Flags — CTF 캡처 스코어 (Things.pas:832/884가 증가, SortPlayers(T10)가
+  // 정렬 키로 사용). M2 T9에서 추가.
+  flags: number
   demoPlayer: boolean
 }
 
@@ -381,6 +384,7 @@ export function createTPlayer(): TPlayer {
     camera: 0,
     kills: 0,
     deaths: 0,
+    flags: 0,
     demoPlayer: false,
   }
 }
@@ -557,8 +561,10 @@ export class TSprite {
   autoReloadWhenCanFire = false
   canAutoReloadSpas = false
   bgState: TBackgroundState
-  // TODO(M3) SERVER: {$IFDEF SERVER} 전용 필드 — 봇/서버 로직이 붙을 때 사용.
-  hasPack = false // TODO(M3) SERVER
+  // {$IFDEF SERVER} 전용 필드 — 규약 8a: 이 심이 권위 서버이므로 게임플레이 필드는 채택.
+  // HasPack: 메디킷 재픽업 쿨다운 (Things.pas:1975/1979가 세팅, sv_healthcooldown 주기 해제는
+  // ServerLoop.pas:424-428 — T10 틱오더).
+  hasPack = false
   targetX = 0 // TODO(M3) SERVER
   targetY = 0 // TODO(M3) SERVER
   // {$ELSE} 클라 전용 사운드 채널 핸들(GattlingSoundChannel2/ReloadSoundChannel/

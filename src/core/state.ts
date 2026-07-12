@@ -163,6 +163,11 @@ export interface GameState {
   // TimeOut(= sv_respawntime * GUNRESISTTIME, Things.pas:349)과 리스폰 카운터가 읽는다.
   svRespawntime: number
 
+  // ── M2 Task 9 추가분 (Things.pas CheckSpriteCollision이 읽는 cvar — "발견 시 추가" 규약).
+  // sv_healthcooldown (Cvar.pas:913, Value=2) — 0보다 크면 메디킷 픽업 시 HasPack 마크
+  // (Things.pas:1978-1980). 주기 해제(ServerLoop.pas:424-428)는 T10 틱오더.
+  svHealthcooldown: number
+
   // ── Game.pas:115 `Bullet: array[1..MAX_BULLETS] of TBullet` — 탄환 슬롯, 1-based
   // ([0]은 더미). bullets.ts(Task 4)의 실제 TBullet — sprite 배열과 동일하게 MAX_BULLETS+1개를
   // createGameState()에서 `new TBullet(gs, i)`로 사전생성한다 (원본은 값 타입 배열이라 항상
@@ -326,6 +331,7 @@ export function createGameState(): GameState {
     svGunsCollide: false,
     svKitsCollide: false,
     svRespawntime: 360,
+    svHealthcooldown: 2,
     bullet: [],
     bulletParts: new ParticleSystem(),
     thing: [],
