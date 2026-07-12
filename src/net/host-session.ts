@@ -19,6 +19,10 @@ export interface HostSessionPlayer { account: string; team: number }
 
 // 60Hz 틱 중 2틱마다 브로드캐스트 ⇒ 30Hz (스펙 §4.2 "~20-30Hz" 범위 내).
 const SNAPSHOT_EVERY_N_TICKS = 2
+// ASSIGN 재전송 주기(~1s). spawnPlayers는 시작 시 1회만 ASSIGN을 보내므로, 이후 접속/재접속한
+// 클라는 그 1회를 놓쳐 자기 스프라이트 번호를 모른다 — 주기적 재전송으로 늦은 합류/재접속을
+// 자연 치유(클라의 ASSIGN 처리는 멱등이라 무해).
+const ASSIGN_EVERY_N_TICKS = 60
 
 export class HostSession {
   private slotOf = new Map<string, number>() // account → 스프라이트 num
@@ -98,6 +102,14 @@ export class HostSession {
 
     this.tickCount++
     if (this.tickCount % SNAPSHOT_EVERY_N_TICKS === 0) this.broadcastSnapshot()
+    if (this.tickCount % ASSIGN_EVERY_N_TICKS === 0) this.rebroadcastAssignments()
+  }
+
+  // 늦게 합류/재접속한 클라를 위해 전 플레이어의 슬롯 배정을 주기적으로 재전송(멱등).
+  private rebroadcastAssignments(): void {
+    for (const [account, num] of this.slotOf) {
+      this.transport.send(MSG.ASSIGN, { account, num })
+    }
   }
 
   // ── 설계 결정 1: 탄환 활성슬롯 diff ──────────────────────────────────────
