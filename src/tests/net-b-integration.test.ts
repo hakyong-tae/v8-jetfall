@@ -80,15 +80,15 @@ describe('M3-B integration: host-authoritative movement over one LoopbackHub', (
       throwNade: false, changeWeapon: false, throwWeapon: false, reload: false, prone: false,
       flagThrow: false, mouseAimX: 500, mouseAimY: 0 }
     const bytes = encodeSnapshot({
-      tick: 1,
+      tick: 1, teamScore1: 0, teamScore2: 0,
       sprites: Array.from({ length: 8 }, (_, i) => ({
         num: i + 1, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 30,
         legsAnimId: 2, legsFrame: 5, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 100,
-        posX: 500.5, posY: 300.25, velX: 3, velY: 0, control,
+        posX: 500.5, posY: 300.25, velX: 3, velY: 0, kills: 0, deaths: 0, control,
       })),
     }).byteLength
-    expect(bytes).toBeLessThanOrEqual(320)
+    expect(bytes).toBeLessThanOrEqual(420) // Phase C: 37B/스프라이트 → 헤더8 + 8×37 = 304B
     const bytesPerSecAt30Hz = bytes * 30
-    expect(bytesPerSecAt30Hz).toBeLessThan(15_000) // ≈8.5KB/s 실측, 15KB/s 미만이면 회귀 없음
+    expect(bytesPerSecAt30Hz).toBeLessThan(15_000) // ≈9.1KB/s 실측, 15KB/s 미만이면 회귀 없음
   })
 })

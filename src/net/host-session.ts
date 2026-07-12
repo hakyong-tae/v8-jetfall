@@ -4,12 +4,16 @@
 // Node 헤드리스(server/host.ts, D단계)와 브라우저-호스트(main.ts, 이번 단계) 양쪽에서 재사용.
 import type { GameState } from '../core/state'
 import type { Transport } from './types'
-import { MSG, encodeSnapshot, decodeInput, type InputMsg, type SnapshotSprite } from './protocol'
-import { createSprite, createTPlayer, HUMAN } from '../core/sprites'
+import {
+  MSG, encodeSnapshot, decodeInput, encodeBullet, type InputMsg, type SnapshotSprite,
+  type FlagState, type KillMsg,
+} from './protocol'
+import { createSprite, createTPlayer, HUMAN, MAX_SPRITES, MAX_BULLETS } from '../core/sprites'
 import { randomizeStart } from '../core/things'
 import { guns, AK74 } from '../core/weapons'
 import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
+import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG } from '../core/constants'
 
 export interface HostSessionPlayer { account: string; team: number }
 
@@ -21,6 +25,12 @@ export class HostSession {
   private lastInput = new Map<string, InputMsg>() // account → 최신 수신 입력(누적 아님, 최신값만)
   private lastAppliedSeq = new Map<number, number>() // sprite num → 마지막 적용 seq
   private tickCount = 0
+
+  // ── C단계 신규 상태 ──
+  private prevActiveBullets = new Set<number>()
+  private bulletSeq = 0
+  private prevKills = new Map<number, number>()   // sprite num → 직전 틱 kills
+  private prevDeadMeat = new Map<number, boolean>() // sprite num → 직전 틱 deadMeat
 
   constructor(private transport: Transport, public readonly gs: GameState) {
     transport.onMessage((event, _payload, from) => {
@@ -44,6 +54,10 @@ export class HostSession {
       this.gs.sprite[num].player!.secWep = 0
       this.gs.sprite[num].respawn()
       this.slotOf.set(p.account, num)
+      // C단계: 킬/사망 diff 기준선을 스폰 시점에 시딩 — 첫 틱 이전(스크립트 데미지 등)에
+      //   발생한 변화도 첫 tick()의 diff가 올바르게 잡도록 한다(lazy-init 사각지대 제거).
+      this.prevKills.set(num, this.gs.sprite[num].player!.kills)
+      this.prevDeadMeat.set(num, this.gs.sprite[num].deadMeat)
       this.transport.send(MSG.ASSIGN, { account: p.account, num })
     }
     this.gs.sortPlayers?.()
@@ -73,9 +87,59 @@ export class HostSession {
       c.mouseAimX = input.mouseAimX; c.mouseAimY = input.mouseAimY
       this.lastAppliedSeq.set(num, input.seq)
     }
-    updateFrame(this.gs)
+
+    updateFrame(this.gs) // ← 탄환 생성·데미지·사망·리스폰·(CTF)깃발자동생성/캡처가 전부 이 안에서 일어남
+
+    this.diffAndBroadcastBullets()  // 설계 결정 1
+    this.diffAndBroadcastKills()    // 설계 결정 3
+
     this.tickCount++
     if (this.tickCount % SNAPSHOT_EVERY_N_TICKS === 0) this.broadcastSnapshot()
+  }
+
+  // ── 설계 결정 1: 탄환 활성슬롯 diff ──────────────────────────────────────
+  private diffAndBroadcastBullets(): void {
+    const activeNow = new Set<number>()
+    for (let i = 1; i <= MAX_BULLETS; i++) {
+      if (this.gs.bullet[i].active) activeNow.add(i)
+    }
+    const humanSprites = new Set(this.slotOf.values())
+    for (const slot of activeNow) {
+      if (this.prevActiveBullets.has(slot)) continue // 기존 탄환 — 이번 틱 신규 아님
+      const b = this.gs.bullet[slot]
+      if (!humanSprites.has(b.owner)) continue // 봇 등 미추적 소유자는 스코프 밖(열린 질문 참조)
+      const vel = this.gs.bulletParts.velocity[slot]
+      this.transport.send(MSG.BULLET, encodeBullet({
+        seq: this.bulletSeq++, owner: b.owner, weaponNum: b.ownerWeapon, style: b.style,
+        hitMultiply: b.hitMultiply, seed: b.seed,
+        posX: b.initial.x, posY: b.initial.y, velX: vel.x, velY: vel.y,
+      }))
+    }
+    this.prevActiveBullets = activeNow
+  }
+
+  // ── 설계 결정 3: 킬 이벤트(킬피드 전용) diff ──────────────────────────────
+  private diffAndBroadcastKills(): void {
+    const killers: number[] = []
+    for (let i = 1; i <= MAX_SPRITES; i++) {
+      const spr = this.gs.sprite[i]
+      if (!spr.active || !spr.player) continue
+      const prev = this.prevKills.get(i) ?? spr.player.kills
+      if (spr.player.kills > prev) killers.push(i)
+      this.prevKills.set(i, spr.player.kills)
+    }
+    for (const num of this.slotOf.values()) {
+      const spr = this.gs.sprite[num]
+      if (!spr.active) continue
+      const wasDead = this.prevDeadMeat.get(num) ?? false
+      if (!wasDead && spr.deadMeat) {
+        const killerNum = killers.find((k) => k !== num) ?? 0
+        const weaponNum = killerNum > 0 ? this.gs.sprite[killerNum].weapon.num : 0
+        const msg: KillMsg = { killer: killerNum, victim: num, weaponNum }
+        this.transport.send(MSG.KILL, msg)
+      }
+      this.prevDeadMeat.set(num, spr.deadMeat)
+    }
   }
 
   private broadcastSnapshot(): void {
@@ -99,6 +163,7 @@ export class HostSession {
         posY: this.gs.spriteParts.pos[num].y,
         velX: this.gs.spriteParts.velocity[num].x,
         velY: this.gs.spriteParts.velocity[num].y,
+        kills: spr.player!.kills, deaths: spr.player!.deaths, // ← C단계 추가
         control: {
           left: spr.control.left, right: spr.control.right, up: spr.control.up, down: spr.control.down,
           fire: spr.control.fire, jetpack: spr.control.jetpack, throwNade: spr.control.throwNade,
@@ -108,7 +173,26 @@ export class HostSession {
         },
       })
     }
-    this.transport.send(MSG.SNAPSHOT, encodeSnapshot({ tick: this.gs.ticks, sprites }))
+
+    // ── 설계 결정 4: CTF 깃발 상태(스타일별 gs.teamFlag 조회 — 호스트가 이미 매 틱 추적 중) ──
+    let flags: FlagState[] | undefined
+    if (this.gs.svGamemode === GAMESTYLE_CTF) {
+      flags = [OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG].map((style) => {
+        const slot = this.gs.teamFlag[style]
+        if (!slot || !this.gs.thing[slot]?.active) {
+          return { style, thingNum: 0, holdingSprite: 0, posX: 0, posY: 0 }
+        }
+        const t = this.gs.thing[slot]
+        return { style, thingNum: slot, holdingSprite: t.holdingSprite, posX: t.skeleton.pos[1].x, posY: t.skeleton.pos[1].y }
+      })
+    }
+
+    this.transport.send(MSG.SNAPSHOT, encodeSnapshot({
+      tick: this.gs.ticks,
+      teamScore1: this.gs.teamScore[1] ?? 0,
+      teamScore2: this.gs.teamScore[2] ?? 0,
+      sprites, flags,
+    }))
   }
 
   // 실 구동용 — 테스트는 tick()을 직접 반복 호출하므로 미사용. 반환값은 정지 함수.
