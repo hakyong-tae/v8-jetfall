@@ -39,6 +39,7 @@ import { SoundSystem, wireSound } from './sound'
 import { InputState } from './input'
 import { Camera } from './camera'
 import { mountLobby, buildSettingsPanel, type StartMatchArg } from './lobby/lobby-ui'
+import { GAME_TITLE, GAME_TAGLINE } from './brand'
 import { injectTheme } from './lobby/ui-theme'
 import { loadSettings } from './settings'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
@@ -537,6 +538,8 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
 // 부트: 로비 경유. ?nolobby=1이면 봇전 직행(개발 편의). ?wshost=…이면 로컬멀티 데모(로비 우회).
 // onStartMatch: 온라인이면 네트 인게임(B), 미배포/오프라인이면 봇전 폴백(A단계 그대로).
 function boot(): void {
+  // 브라우저 탭 타이틀도 브랜드 단일소스에서 — index.html의 정적 title을 덮는다(리뷰 지적: 사용자 노출 표면).
+  document.title = `${GAME_TITLE} — ${GAME_TAGLINE}`
   const params = new URLSearchParams(window.location.search)
   const wshost = params.get('wshost')
   if (wshost) {
