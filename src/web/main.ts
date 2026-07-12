@@ -401,10 +401,58 @@ function fail(err: unknown): void {
   document.body.appendChild(pre)
 }
 
-// 부트: 로비 경유. ?nolobby=1이면 봇전 직행(개발 편의).
+// 개발/로컬멀티 데모 — 로비(agent8) 없이 전용 Node 호스트(자체 ws, `npm run host`)에 클라로 직접 접속.
+// URL: ?wshost=ws://localhost:8765&acc=alice[&mode=ctf]. 탭 2개를 서로 다른 acc로 열면 실제 대전.
+// 배포 없이 넷코드를 눈으로 확인하는 용도(스펙 §3.1-① 전용호스트 + own-ws 플랜B). 항상 클라이언트.
+async function startWsClientMatch(url: string, account: string, ctf: boolean): Promise<void> {
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf)
+  const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
+  const transport = makeWsClientTransport(url, account)
+  const status = await transport.connect()
+  if (status !== 'online') { fail(new Error(`ws host 접속 실패: ${url} — npm run host 실행 확인`)); return }
+
+  const scratch = createScratchControl()
+  let currentLocalInput: LocalInput = toLocalInput(scratch)
+  const clientSession = new ClientSession(transport, gs, account, () => currentLocalInput)
+  let myNum = -1
+  ;(window as unknown as Record<string, unknown>).__soldatNet = { gs, net: transport, account }
+
+  let acc = 0
+  app.ticker.add((ticker) => {
+    acc += ticker.deltaMS
+    let ticks = 0
+    while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
+      input.applyTo(scratch, camera.x, camera.y, app.screen.width, app.screen.height)
+      currentLocalInput = toLocalInput(scratch)
+      clientSession.tick()
+      if (clientSession.myNum !== null) myNum = clientSession.myNum
+      acc -= TICK_MS; ticks++
+    }
+    if (ticks === MAX_CATCHUP_TICKS) acc = 0
+    gostek.update(gs, myNum)
+    entities.update(gs)
+    if (myNum >= 0) {
+      hud.update(gs, myNum, app.screen.width, app.screen.height)
+      hud.setKillFeed(gs, clientSession.killFeed)
+      const spr = gs.sprite[myNum]
+      sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[myNum])
+      camera.update(gs.spriteParts.pos[myNum].x, gs.spriteParts.pos[myNum].y, input.mouseX, input.mouseY, app.screen.width, app.screen.height)
+      world.position.set(app.screen.width / 2 - camera.x, app.screen.height / 2 - camera.y)
+      bgLayer.position.set(app.screen.width / 2, app.screen.height / 2 - camera.y)
+    }
+  })
+}
+
+// 부트: 로비 경유. ?nolobby=1이면 봇전 직행(개발 편의). ?wshost=…이면 로컬멀티 데모(로비 우회).
 // onStartMatch: 온라인이면 네트 인게임(B), 미배포/오프라인이면 봇전 폴백(A단계 그대로).
 function boot(): void {
   const params = new URLSearchParams(window.location.search)
+  const wshost = params.get('wshost')
+  if (wshost) {
+    document.body.innerHTML = ''
+    startWsClientMatch(wshost, params.get('acc') || 'p' + Math.floor(performance.now() % 100000), params.get('mode') === 'ctf').catch(fail)
+    return
+  }
   if (params.get('nolobby') === '1') {
     startBotMatch().catch(fail)
     return
