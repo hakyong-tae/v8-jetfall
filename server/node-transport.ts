@@ -21,6 +21,7 @@ export interface ResolveOptions {
   timeoutMs?: number
   wsPort?: number
   roomKey?: string
+  publicUrl?: string // M3-E: 플랜B(own-ws) 공개 URL(cloudflared 터널 등). agent8 모드에선 불필요.
 }
 
 export interface ResolvedHostTransport {
@@ -42,6 +43,10 @@ export async function resolveHostTransport(opts: ResolveOptions = {}): Promise<R
     const r = await withTimeout
     if (r.status !== 'online') throw new Error(`agent8 status=${r.status}`)
     console.log('[host] agent8-in-node OK — using agent8 relay (happy path)')
+    if (opts.publicUrl) {
+      // 오조합 방지: agent8 릴레이가 라우팅하므로 공개 URL은 무의미. 무시하고 알림만.
+      console.log(`[host] --public-url ignored in agent8 mode (relay routes clients; no direct ws URL needed)`)
+    }
     // 실제 배포에서는 여기서 raw(GameServer 인스턴스)를 src/net/transport.ts의 makeAgent8Transport와
     // 동등한 어댑터로 감싼다(브라우저와 동일 프로토콜) — 어댑터 자체는 transport.ts 재사용 가능
     // (import.meta.env 회피만 하면 되므로, provider.getInstance를 이미 연결된 인스턴스를 돌려주는
@@ -50,6 +55,12 @@ export async function resolveHostTransport(opts: ResolveOptions = {}): Promise<R
   } catch (err) {
     console.log(`[host] agent8-in-node unavailable (${(err as Error).message}) — falling back to own-ws`)
     const ws = await startWsHostTransport({ port: opts.wsPort ?? 8765 })
-    return { mode: 'own-ws', transport: ws.transport, publicUrlHint: `ws://localhost:${ws.port}/`, close: ws.close }
+    const publicUrlHint = opts.publicUrl ?? `ws://localhost:${ws.port}/`
+    if (opts.publicUrl) {
+      // 정직성 — Node 프로세스엔 agent8 연결 자체가 없어 dedicatedHostUrl 자동기록이 근본적으로 불가.
+      console.log(`[host] --public-url=${opts.publicUrl} noted, but this Node process has no agent8 connection`)
+      console.log(`[host]   → cannot auto-write dedicatedHostUrl to the room. See docs/DEPLOY-VERSE8.md §3 (manual console command).`)
+    }
+    return { mode: 'own-ws', transport: ws.transport, publicUrlHint, close: ws.close }
   }
 }

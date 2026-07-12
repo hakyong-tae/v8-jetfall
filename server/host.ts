@@ -7,7 +7,7 @@ import { TEAM_NONE } from '../src/core/constants'
 import { LoopbackHub } from '../src/net/loopback'
 import type { Transport } from '../src/net/types'
 
-function parseArgs(argv: string[]): { room: string; ctf: boolean; players: string[]; transport?: string; port: number } {
+function parseArgs(argv: string[]): { room: string; ctf: boolean; players: string[]; transport?: string; port: number; publicUrl?: string } {
   const get = (flag: string, def?: string) => {
     const i = argv.indexOf(flag)
     return i >= 0 ? argv[i + 1] : def
@@ -18,6 +18,7 @@ function parseArgs(argv: string[]): { room: string; ctf: boolean; players: strin
     players: (get('--players', '') || '').split(',').filter(Boolean),
     transport: get('--transport'),
     port: Number(get('--port', '8765')),
+    publicUrl: get('--public-url'), // M3-E: 플랜B 공개 ws URL(터널). 배포문서 §3 참조.
   }
 }
 
@@ -40,7 +41,7 @@ async function main(): Promise<void> {
     await transport.joinRoom(args.room); await observer.joinRoom(args.room)
     observer.onMessage((event) => { if (event === 'snap') console.log('[host] snapshot broadcast observed') })
   } else {
-    const resolved = await resolveHostTransport({ roomKey: args.room, wsPort: args.port })
+    const resolved = await resolveHostTransport({ roomKey: args.room, wsPort: args.port, publicUrl: args.publicUrl })
     transport = resolved.transport
     stop = resolved.close
     if (resolved.mode === 'own-ws') {
