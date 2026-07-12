@@ -94,6 +94,11 @@ export const GOSTEK_PRIMARY: Record<number, GostekPrimary> = {
 const WEAPON_P1 = 16 // 오른손 파티클
 const WEAPON_P2 = 15 // 왼손 파티클
 
+// 파트 텍스처의 월드 축소비 — 1.8 에셋은 고해상도(클래식의 ~2배+)로 제작되어 mod.ini
+// [SCALE] DefaultScale=4.5 기반으로 엔진이 축소해 그린다. 원본 스크린샷과의 시각 대조로
+// 캘리브레이션한 값 (원본 병사 실측: 총/키 비율 0.37, 머리 ~4.4 world px).
+export const GOSTEK_TEX_SCALE = 1 / 4.5
+
 interface PartSprite {
   part: GostekPart
   sprite: Sprite
@@ -195,7 +200,7 @@ export class GostekRenderer {
       sprite.anchor.set(part.cx, cy)
       sprite.position.set(x1, y1 + 1)
       sprite.rotation = Math.atan2(y2 - y1, x2 - x1)
-      sprite.scale.set(sx, sy)
+      sprite.scale.set(sx * GOSTEK_TEX_SCALE, sy * GOSTEK_TEX_SCALE)
       sprite.alpha = soldier.alpha / 255
     }
 
@@ -233,7 +238,7 @@ export class GostekRenderer {
     ws.anchor.set(prim.cx, cy)
     ws.position.set(x1, y1 + 1)
     ws.rotation = Math.atan2(y2 - y1, x2 - x1)
-    ws.scale.set(1, 1)
+    ws.scale.set(GOSTEK_TEX_SCALE, GOSTEK_TEX_SCALE)
     ws.alpha = soldier.alpha / 255
   }
 }
