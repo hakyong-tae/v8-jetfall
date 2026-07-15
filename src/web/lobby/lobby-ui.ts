@@ -9,10 +9,11 @@ import {
   GAMESTYLE_DEATHMATCH, GAMESTYLE_CTF,
   TEAM_ALPHA, TEAM_BRAVO, TEAM_SPECTATOR, TEAM_NONE,
 } from '../../core/constants'
-import { GAME_TITLE, GAME_TAGLINE, GAME_VERSION, CREDITS_LINES } from '../brand'
+import { GAME_TITLE, GAME_VERSION, CREDITS_LINES } from '../brand'
 import { loadSettings, saveSettings, type GameSettings } from '../settings'
 import { loadManifest } from '../assets'
 import { injectTheme, showToast } from './ui-theme'
+import { t, LANGS, getLang, setLang } from '../i18n'
 
 export interface StartMatchArg { lobby: LobbyClient; mode: number; myTeam: number }
 
@@ -70,42 +71,64 @@ const CONTROLS: [string, string][] = [
 
 // ── 설정 패널 빌더 — 설정 화면과 인게임 ESC 오버레이가 공유 (plan Task4).
 // 변경 즉시 saveSettings + onChange 콜백. 반환 엘리먼트를 원하는 컨테이너에 붙이면 된다.
-export function buildSettingsPanel(onChange?: (s: GameSettings) => void): HTMLElement {
-  const s = loadSettings()
+// 언어 변경 시 자기 자신을 재렌더해 라벨이 즉시 반영된다(설정화면·ESC 오버레이 공용).
+// onLangChange가 주어지면(설정 화면) 화면 전체(제목 포함)를 다시 그리게 위임하고, 없으면(ESC 슬롯)
+// 패널만 자체 재렌더한다.
+export function buildSettingsPanel(
+  onChange?: (s: GameSettings) => void,
+  onLangChange?: () => void,
+): HTMLElement {
   const panel = document.createElement('div')
   panel.style.display = 'flex'
   panel.style.flexDirection = 'column'
   panel.style.gap = '14px'
-  panel.innerHTML = `
-    <div class="jf-row">
-      <span class="jf-label">SFX Volume</span>
-      <input class="jf-slider" id="jf-vol" type="range" min="0" max="100" step="1" value="${s.sfxVolume}" />
-      <span class="jf-value" id="jf-vol-val">${s.sfxVolume}</span>
-    </div>
-    <div class="jf-row">
-      <span class="jf-label">Mute</span>
-      <input class="jf-check" id="jf-mute" type="checkbox" ${s.muted ? 'checked' : ''} />
-    </div>
-    <div>
-      <div class="jf-label" style="margin-bottom:8px">Controls</div>
-      <table class="jf-table">
-        <tbody>
-          ${CONTROLS.map(([k, desc]) => `<tr><td><span class="jf-key">${k}</span></td><td>${desc}</td></tr>`).join('')}
-        </tbody>
-      </table>
-      <div class="jf-muted" style="margin-top:6px">키 변경은 추후 지원 예정</div>
-    </div>`
-  const vol = panel.querySelector('#jf-vol') as HTMLInputElement
-  const volVal = panel.querySelector('#jf-vol-val') as HTMLElement
-  const mute = panel.querySelector('#jf-mute') as HTMLInputElement
-  const commit = (): void => {
-    const next: GameSettings = { sfxVolume: Number(vol.value), muted: mute.checked }
-    volVal.textContent = vol.value
-    saveSettings(next)
-    onChange?.(next)
+  const render = (): void => {
+    const s = loadSettings()
+    const langOptions = LANGS.map(
+      (l) => `<option value="${l.code}" ${l.code === getLang() ? 'selected' : ''}>${l.label}</option>`,
+    ).join('')
+    panel.innerHTML = `
+      <div class="jf-row">
+        <span class="jf-label">${t('settings.sfxVolume')}</span>
+        <input class="jf-slider" id="jf-vol" type="range" min="0" max="100" step="1" value="${s.sfxVolume}" />
+        <span class="jf-value" id="jf-vol-val">${s.sfxVolume}</span>
+      </div>
+      <div class="jf-row">
+        <span class="jf-label">${t('settings.mute')}</span>
+        <input class="jf-check" id="jf-mute" type="checkbox" ${s.muted ? 'checked' : ''} />
+      </div>
+      <div class="jf-row">
+        <span class="jf-label">${t('settings.language')}</span>
+        <select class="jf-input" id="jf-lang">${langOptions}</select>
+      </div>
+      <div>
+        <div class="jf-label" style="margin-bottom:8px">Controls</div>
+        <table class="jf-table">
+          <tbody>
+            ${CONTROLS.map(([k, desc]) => `<tr><td><span class="jf-key">${k}</span></td><td>${desc}</td></tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="jf-muted" style="margin-top:6px">키 변경은 추후 지원 예정</div>
+      </div>`
+    const vol = panel.querySelector('#jf-vol') as HTMLInputElement
+    const volVal = panel.querySelector('#jf-vol-val') as HTMLElement
+    const mute = panel.querySelector('#jf-mute') as HTMLInputElement
+    const lang = panel.querySelector('#jf-lang') as HTMLSelectElement
+    const commit = (): void => {
+      const next: GameSettings = { sfxVolume: Number(vol.value), muted: mute.checked, lang: getLang() }
+      volVal.textContent = vol.value
+      saveSettings(next)
+      onChange?.(next)
+    }
+    vol.addEventListener('input', commit)
+    mute.addEventListener('change', commit)
+    lang.addEventListener('change', () => {
+      setLang(lang.value as import('../i18n').Lang)
+      if (onLangChange) onLangChange() // 설정 화면: 제목 포함 전체 재렌더
+      else render() // ESC 슬롯: 패널만 자체 재렌더
+    })
   }
-  vol.addEventListener('input', commit)
-  mute.addEventListener('change', commit)
+  render()
   return panel
 }
 
@@ -182,8 +205,8 @@ function versionTag(scr: HTMLElement): void {
 // ── title ────────────────────────────────────────────────────────────────────
 function renderTitle(ctx: Ctx, scr: HTMLElement): void {
   scr.appendChild(el('h1', 'jf-logo', GAME_TITLE))
-  scr.appendChild(el('p', 'jf-tagline', GAME_TAGLINE))
-  scr.appendChild(el('p', 'jf-blink', 'PRESS ANY KEY'))
+  scr.appendChild(el('p', 'jf-tagline', t('title.tagline')))
+  scr.appendChild(el('p', 'jf-blink', t('title.pressAnyKey')))
   versionTag(scr)
   const go = (): void => show(ctx, 'menu')
   const onKey = (e: KeyboardEvent): void => { e.preventDefault(); go() }
@@ -206,10 +229,10 @@ function menuList(items: [string, () => void][]): HTMLElement {
 function renderMenu(ctx: Ctx, scr: HTMLElement): void {
   scr.appendChild(el('h1', 'jf-logo jf-logo-sm', GAME_TITLE))
   scr.appendChild(menuList([
-    ['Play Online', () => void goOnline(ctx)],
-    ['Offline Bots', () => show(ctx, 'offline')],
-    ['Settings', () => show(ctx, 'settings')],
-    ['Credits', () => show(ctx, 'credits')],
+    [t('menu.playOnline'), () => void goOnline(ctx)],
+    [t('menu.offlineBots'), () => show(ctx, 'offline')],
+    [t('menu.settings'), () => show(ctx, 'settings')],
+    [t('menu.credits'), () => show(ctx, 'credits')],
   ]))
   versionTag(scr)
   ;(scr.querySelector('.jf-menu-item') as HTMLElement | null)?.focus()
@@ -239,7 +262,7 @@ async function goOnline(ctx: Ctx): Promise<void> {
 // ── offline 모드+맵 선택 소메뉴 (M5: 모드 토글은 화면 유지, 맵 리스트만 갱신) ────────
 function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
   scr.appendChild(el('h1', 'jf-logo jf-logo-sm', GAME_TITLE))
-  scr.appendChild(el('p', 'jf-tagline', 'OFFLINE BOTS'))
+  scr.appendChild(el('p', 'jf-tagline', t('offline.header')))
 
   const panel = el('div', 'jf-panel')
   panel.style.minWidth = 'min(460px, 92vw)'
@@ -257,7 +280,7 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
     if (mapKey !== 'random' && !keys.includes(mapKey)) mapKey = 'random' // 모드 전환 시 소속 안 맞으면 폴백
     const options = ['random', ...keys]
     list.innerHTML = `<div class="jf-maplist-scroll">${options.map((k) => `
-      <button class="jf-btn jf-maplist-item ${k === mapKey ? 'jf-on' : ''}" data-map="${k}">${k === 'random' ? 'Random' : k}</button>
+      <button class="jf-btn jf-maplist-item ${k === mapKey ? 'jf-on' : ''}" data-map="${k}">${k === 'random' ? t('offline.random') : k}</button>
     `).join('')}</div>`
     list.querySelectorAll<HTMLButtonElement>('[data-map]').forEach((b) => {
       b.addEventListener('click', () => {
@@ -271,14 +294,14 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
   const draw = (): void => {
     panel.innerHTML = `
       <div class="jf-row">
-        <button class="jf-btn ${mode === 'dm' ? 'jf-btn-primary' : ''}" id="jf-mode-dm">Deathmatch</button>
-        <button class="jf-btn ${mode === 'ctf' ? 'jf-btn-primary' : ''}" id="jf-mode-ctf">Capture the Flag</button>
+        <button class="jf-btn ${mode === 'dm' ? 'jf-btn-primary' : ''}" id="jf-mode-dm">${t('mode.dm')}</button>
+        <button class="jf-btn ${mode === 'ctf' ? 'jf-btn-primary' : ''}" id="jf-mode-ctf">${t('mode.ctf')}</button>
       </div>
-      <div class="jf-label" style="margin-top:4px">Map</div>
+      <div class="jf-label" style="margin-top:4px">${t('offline.map')}</div>
       <div id="jf-maplist"></div>
       <div class="jf-row" style="margin-top:6px">
-        <button class="jf-btn jf-btn-primary" id="jf-start">Start Match</button>
-        <button class="jf-btn" id="jf-back">Back</button>
+        <button class="jf-btn jf-btn-primary" id="jf-start">${t('offline.start')}</button>
+        <button class="jf-btn" id="jf-back">${t('common.back')}</button>
       </div>`
     panel.querySelector('#jf-mode-dm')!.addEventListener('click', () => { mode = 'dm'; draw() })
     panel.querySelector('#jf-mode-ctf')!.addEventListener('click', () => { mode = 'ctf'; draw() })
@@ -301,8 +324,8 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
 // ── settings ─────────────────────────────────────────────────────────────────
 function renderSettings(ctx: Ctx, scr: HTMLElement): void {
   const panel = el('div', 'jf-panel')
-  panel.appendChild(el('h2', 'jf-h', 'Settings'))
-  panel.appendChild(buildSettingsPanel(ctx.opts.onSettingsChange))
+  panel.appendChild(el('h2', 'jf-h', t('menu.settings')))
+  panel.appendChild(buildSettingsPanel(ctx.opts.onSettingsChange, () => show(ctx, 'settings')))
   panel.appendChild(backBtn(ctx, 'menu'))
   scr.appendChild(panel)
   versionTag(scr)
@@ -312,7 +335,7 @@ function renderSettings(ctx: Ctx, scr: HTMLElement): void {
 // ── credits ──────────────────────────────────────────────────────────────────
 function renderCredits(ctx: Ctx, scr: HTMLElement): void {
   const panel = el('div', 'jf-panel')
-  panel.appendChild(el('h2', 'jf-h', 'Credits'))
+  panel.appendChild(el('h2', 'jf-h', t('credits.heading')))
   panel.appendChild(el('div', 'jf-logo jf-logo-sm', GAME_TITLE))
   const list = el('div', '')
   list.style.display = 'flex'
@@ -332,7 +355,7 @@ function renderCredits(ctx: Ctx, scr: HTMLElement): void {
 }
 
 function backBtn(ctx: Ctx, to: ScreenName): HTMLElement {
-  const b = el('button', 'jf-btn', 'Back') as HTMLButtonElement
+  const b = el('button', 'jf-btn', t('common.back')) as HTMLButtonElement
   b.style.alignSelf = 'flex-start'
   b.addEventListener('click', () => show(ctx, to))
   return b
@@ -448,7 +471,7 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
         <button class="jf-btn jf-btn-spec ${me?.team === TEAM_SPECTATOR ? 'jf-on' : ''}" data-team="${TEAM_SPECTATOR}">Spectator</button>
       </div>` : ''
     panel.innerHTML = `
-      <h2 class="jf-h">Room — ${isCtf ? 'Capture the Flag' : 'Deathmatch'}</h2>
+      <h2 class="jf-h">Room — ${isCtf ? t('mode.ctf') : t('mode.dm')}</h2>
       <table class="jf-table">
         <thead><tr><th>Player</th>${isCtf ? '<th>Team</th>' : ''}<th>Ready</th></tr></thead>
         <tbody>
@@ -462,7 +485,7 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
       </table>
       ${teamBtns}
       <div class="jf-row">
-        <button class="jf-btn ${me?.ready ? 'jf-btn-primary' : ''}" id="jf-ready">${me?.ready ? 'Ready ✓' : 'Ready'}</button>
+        <button class="jf-btn ${me?.ready ? 'jf-btn-primary' : ''}" id="jf-ready">${me?.ready ? t('room.ready') + ' ✓' : t('room.ready')}</button>
         ${lc.isHost
           ? '<button class="jf-btn jf-btn-primary" id="jf-start">Start Match</button>'
           : '<span class="jf-muted">호스트 시작 대기 중…</span>'}

@@ -33,4 +33,21 @@ describe('settings persistence', () => {
     const st2 = mockStorage({ [SETTINGS_KEY]: JSON.stringify({ sfxVolume: -5, muted: false }) })
     expect(loadSettings(st2)).toEqual({ sfxVolume: 0, muted: false })
   })
+
+  it('i18n backward-compat: old JSON without lang loads fine (lang undefined)', () => {
+    const st = mockStorage({ [SETTINGS_KEY]: JSON.stringify({ sfxVolume: 70, muted: false }) })
+    const s = loadSettings(st)
+    expect(s).toEqual({ sfxVolume: 70, muted: false })
+    expect(s.lang).toBeUndefined()
+  })
+
+  it('keeps a valid lang and drops an invalid one', () => {
+    const ok = mockStorage({ [SETTINGS_KEY]: JSON.stringify({ sfxVolume: 70, muted: false, lang: 'ko' }) })
+    expect(loadSettings(ok).lang).toBe('ko')
+    const bad = mockStorage({ [SETTINGS_KEY]: JSON.stringify({ sfxVolume: 70, muted: false, lang: 'xx' }) })
+    expect(loadSettings(bad).lang).toBeUndefined()
+    // round-trips through save
+    saveSettings({ sfxVolume: 30, muted: true, lang: 'zh' }, ok)
+    expect(loadSettings(ok).lang).toBe('zh')
+  })
 })

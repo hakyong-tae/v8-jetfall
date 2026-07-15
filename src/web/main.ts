@@ -42,6 +42,7 @@ import { mountLobby, buildSettingsPanel, type StartMatchArg } from './lobby/lobb
 import { GAME_TITLE, GAME_TAGLINE } from './brand'
 import { injectTheme } from './lobby/ui-theme'
 import { loadSettings } from './settings'
+import { t, initLang } from './i18n'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
 import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
@@ -220,12 +221,12 @@ function attachEscMenu(
     const panel = document.createElement('div')
     panel.className = 'jf-panel'
     panel.innerHTML = `
-      <h2 class="jf-h">${o.pausable ? 'Paused' : 'Menu'}</h2>
+      <h2 class="jf-h">${o.pausable ? t('esc.paused') : t('esc.menu')}</h2>
       ${o.pausable ? '' : '<div class="jf-muted">멀티플레이 중 — 게임은 계속 진행됩니다</div>'}
       <nav class="jf-menu" style="align-items:stretch">
-        <button class="jf-menu-item" id="jf-esc-resume">Resume</button>
-        <button class="jf-menu-item" id="jf-esc-settings">Settings</button>
-        <button class="jf-menu-item" id="jf-esc-leave">Leave to Menu</button>
+        <button class="jf-menu-item" id="jf-esc-resume">${t('esc.resume')}</button>
+        <button class="jf-menu-item" id="jf-esc-settings">${t('menu.settings')}</button>
+        <button class="jf-menu-item" id="jf-esc-leave">${t('esc.leave')}</button>
       </nav>
       <div id="jf-esc-settings-slot"></div>`
     overlay.appendChild(panel)
@@ -592,6 +593,8 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
 // 부트: 로비 경유. ?nolobby=1이면 봇전 직행(개발 편의). ?wshost=…이면 로컬멀티 데모(로비 우회).
 // onStartMatch: 온라인이면 네트 인게임(B), 미배포/오프라인이면 봇전 폴백(A단계 그대로).
 function boot(): void {
+  // 첫 페인트부터 올바른 언어로 렌더되도록 저장된 설정(없으면 자동감지)으로 언어를 먼저 확정한다.
+  initLang(loadSettings().lang)
   // 브라우저 탭 타이틀도 브랜드 단일소스에서 — index.html의 정적 title을 덮는다(리뷰 지적: 사용자 노출 표면).
   document.title = `${GAME_TITLE} — ${GAME_TAGLINE}`
   const params = new URLSearchParams(window.location.search)
