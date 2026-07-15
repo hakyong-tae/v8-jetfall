@@ -11,6 +11,7 @@ import {
 } from '../core/weapons'
 import { GAMESTYLE_CTF, GAMESTYLE_INF, GAMESTYLE_HTF, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
 import { MAX_SPRITES } from '../core/sprites'
+import { t } from './i18n'
 
 // 무기 index → interface/guns 아이콘 키 (interface/guns/0..10 = 내부 무기번호 SOCOM..MINIGUN).
 // export: src/web/loadout-menu.ts(M5)가 무기선택(림보) 메뉴 아이콘 재사용.
@@ -153,7 +154,7 @@ export class Hud {
     if (isTeam) {
       this.topText.text = `Alpha ${gs.teamScore[TEAM_ALPHA]}   -   ${gs.teamScore[TEAM_BRAVO]} Bravo`
     } else {
-      this.topText.text = `Kills ${spr.player?.kills ?? 0} / ${gs.svKilllimit}`
+      this.topText.text = `${t('hud.kills')} ${spr.player?.kills ?? 0} / ${gs.svKilllimit}`
     }
     this.topText.position.set(screenW / 2, 10)
   }
@@ -186,14 +187,14 @@ export class Hud {
     if (isCtf) {
       lines.push(`Alpha ${gs.teamScore[TEAM_ALPHA]}   -   ${gs.teamScore[TEAM_BRAVO]} Bravo`)
       lines.push('')
-      lines.push(pad('Name', 16) + pad('Team', 8) + pad('Kills', 7) + pad('Deaths', 8) + 'Caps')
+      lines.push(pad(t('sb.name'), 16) + pad(t('sb.team'), 8) + pad(t('sb.kills'), 7) + pad(t('sb.deaths'), 8) + t('sb.caps'))
       for (const r of rows) {
         lines.push(
           pad(r.name, 16) + pad(teamLabel(r.team), 8) + pad(String(r.kills), 7) + pad(String(r.deaths), 8) + String(r.caps),
         )
       }
     } else {
-      lines.push(pad('Name', 16) + pad('Kills', 7) + 'Deaths')
+      lines.push(pad(t('sb.name'), 16) + pad(t('sb.kills'), 7) + t('sb.deaths'))
       for (const r of rows) lines.push(pad(r.name, 16) + pad(String(r.kills), 7) + String(r.deaths))
     }
 

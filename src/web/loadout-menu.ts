@@ -11,6 +11,7 @@ import type { GameState } from '../core/state'
 import type { Manifest } from './assets'
 import { guns, weaponNumToIndex, PRIMARY_WEAPONS, SECONDARY_WEAPONS, MAIN_WEAPONS } from '../core/weapons'
 import { GUN_ICON } from './hud'
+import { t } from './i18n'
 
 export interface LoadoutMenuOpts {
   // 온라인 비-호스트 클라 전용 — 로컬 예측 적용 직후 호출(호스트/오프라인 경로는 생략, main.ts가 주입 여부 결정).
@@ -103,15 +104,15 @@ export class LoadoutMenu {
     this.overlay.innerHTML = `
       <div class="jf-loadout-panel">
         <div class="jf-loadout-col">
-          <div class="jf-label">Primary</div>
+          <div class="jf-label">${t('loadout.primary')}</div>
           <div class="jf-loadout-list">${primaryHtml}</div>
         </div>
         <div class="jf-loadout-col">
-          <div class="jf-label">Secondary</div>
+          <div class="jf-label">${t('loadout.secondary')}</div>
           <div class="jf-loadout-list">${secondaryHtml}</div>
         </div>
       </div>
-      <div class="jf-muted" style="text-align:center;margin-top:6px">Click to equip — Q toggle, Esc close</div>`
+      <div class="jf-muted" style="text-align:center;margin-top:6px">${t('loadout.hint')}</div>`
     this.overlay.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('[data-w]')
       if (!btn) return
