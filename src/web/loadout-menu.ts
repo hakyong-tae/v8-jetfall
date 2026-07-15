@@ -41,7 +41,7 @@ export class LoadoutMenu {
     overlay.className = 'jf-loadout-overlay'
     document.body.appendChild(overlay)
     this.overlay = overlay
-    this.render()
+    this.buildStructure()
   }
 
   close(): void {
@@ -68,7 +68,10 @@ export class LoadoutMenu {
       this.open()
     }
     this.prevDeadMeat = spr.deadMeat
-    if (this.overlay) this.render() // 열려있는 동안 선택 하이라이트를 살아있음/무기 변화에 맞춰 갱신
+    // 열려있는 동안 선택 하이라이트만 갱신. innerHTML 재생성(=버튼 DOM 교체)은 절대 하지 않는다 —
+    // 매 프레임 교체하면 실제 마우스 클릭의 mousedown/mouseup 사이에 프레임 경계가 끼며 버튼이
+    // 새 요소로 갈려 click 이벤트가 발생하지 못한다(무기 선택 먹통 버그).
+    if (this.overlay) this.refreshHighlight()
   }
 
   // Q 토글 + Escape(열려있을 때만) 핫키. 반환값은 해제 함수 — main.ts가 attachEscMenu보다
@@ -88,7 +91,9 @@ export class LoadoutMenu {
     return () => window.removeEventListener('keydown', onKey)
   }
 
-  private render(): void {
+  // 구조를 *한 번만* 만든다(버튼 DOM은 매치 내내 고정 — weaponActive는 라운드 중 안 바뀜).
+  // 클릭은 오버레이 한 곳에 이벤트 위임으로 처리해, 버튼 요소를 절대 교체하지 않는다.
+  private buildStructure(): void {
     if (!this.overlay) return
     const me = this.meFn()
     const spr = this.gs.sprite[me]
@@ -107,12 +112,26 @@ export class LoadoutMenu {
         </div>
       </div>
       <div class="jf-muted" style="text-align:center;margin-top:6px">Click to equip — Q toggle, Esc close</div>`
+    this.overlay.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('[data-w]')
+      if (!btn) return
+      this.pick(Number(btn.dataset.w), btn.dataset.primary === '1')
+    })
+    this.refreshHighlight()
+  }
+
+  // 매 프레임 호출 가능 — 기존 버튼 요소를 유지한 채 선택 하이라이트(jf-on) 클래스만 갱신.
+  private refreshHighlight(): void {
+    if (!this.overlay) return
+    const me = this.meFn()
+    const spr = this.gs.sprite[me]
+    if (!spr?.active) { this.close(); return }
+    const selPrimary = spr.selWeapon > 0 ? weaponNumToIndex(spr.selWeapon) : -1
+    const selSecondary = PRIMARY_WEAPONS + (spr.player?.secWep ?? -1) + 1
     this.overlay.querySelectorAll<HTMLButtonElement>('[data-w]').forEach((b) => {
-      b.addEventListener('click', () => {
-        const w = Number(b.dataset.w)
-        const isPrimary = b.dataset.primary === '1'
-        this.pick(w, isPrimary)
-      })
+      const w = Number(b.dataset.w)
+      const on = b.dataset.primary === '1' ? w === selPrimary : w === selSecondary
+      b.classList.toggle('jf-on', on)
     })
   }
 
@@ -165,6 +184,6 @@ export class LoadoutMenu {
       }
     }
     this.opts.onNetworkPick?.(spr.selWeapon, spr.player.secWep)
-    this.render()
+    this.refreshHighlight()
   }
 }
