@@ -13,8 +13,21 @@ import type { TControl } from '../core/sprites'
 export class InputState {
   private keys = new Set<string>()
   private mouseButtons = new Set<number>()
+  private menuOpen = false // M5: 무기선택(림보) 메뉴가 열려있는 동안 좌클릭(발사) 억제용 게이트
   mouseX = 0 // 캔버스(스크린) px
   mouseY = 0
+
+  // M5: 로드아웃(림보) 메뉴가 화면 일부만 덮으므로(중앙 하단), 메뉴 바깥 캔버스 클릭이 그대로
+  // 발사로 새지 않도록 UI측에서 명시적으로 게이트한다(코어 TControl은 무수정).
+  setMenuOpen(open: boolean): void {
+    this.menuOpen = open
+  }
+
+  // M5: Tab 스코어보드 — 원본 change-weapon 키(Q)와 겹치지 않게 별도 키. attach()에서 이미
+  // e.preventDefault()로 브라우저 포커스 이동을 막고 있으므로 keys 세트에 항상 기록된다.
+  isTabHeld(): boolean {
+    return this.keys.has('Tab')
+  }
 
   attach(target: HTMLElement): void {
     window.addEventListener('keydown', (e) => {
@@ -49,8 +62,10 @@ export class InputState {
     control.down = this.keys.has('KeyS') // +crouch
     control.prone = this.keys.has('KeyX')
     control.jetpack = this.mouseButtons.has(2) // MOUSE3 = 우클릭
-    control.fire = this.mouseButtons.has(0) // MOUSE1 (발사는 TODO(M2) — 심이 무시)
-    control.changeWeapon = this.keys.has('KeyQ')
+    control.fire = !this.menuOpen && this.mouseButtons.has(0) // MOUSE1 — 로드아웃 메뉴 열림 중엔 억제
+    // 로드아웃 메뉴 토글도 KeyQ라, 메뉴 열림 중엔 코어 changeWeapon(무기 스왑 애니메이션)이
+    // 같은 키입력으로 같이 발동하지 않도록 fire와 동일하게 게이트한다(리뷰 finding #1).
+    control.changeWeapon = !this.menuOpen && this.keys.has('KeyQ')
     control.reload = this.keys.has('KeyR')
     control.throwWeapon = this.keys.has('KeyF')
     control.throwNade = this.keys.has('KeyE')

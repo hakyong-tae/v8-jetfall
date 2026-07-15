@@ -11,14 +11,39 @@ import {
 } from '../../core/constants'
 import { GAME_TITLE, GAME_TAGLINE, GAME_VERSION, CREDITS_LINES } from '../brand'
 import { loadSettings, saveSettings, type GameSettings } from '../settings'
+import { loadManifest } from '../assets'
 import { injectTheme, showToast } from './ui-theme'
 
 export interface StartMatchArg { lobby: LobbyClient; mode: number; myTeam: number }
 
 export interface LobbyOpts {
   onStartMatch: (a: StartMatchArg) => void
-  onOfflineBots: (mode: 'dm' | 'ctf') => void
+  // mapKey 생략(undefined) = Random(모드에 맞는 후보 중 시드 없는 선택은 main.ts 담당). §M5 Task1
+  onOfflineBots: (mode: 'dm' | 'ctf', mapKey?: string) => void
   onSettingsChange?: (s: GameSettings) => void
+}
+
+// ── M5: 봇전 맵 선택 — manifest.maps 99종을 접두사로 필터(grep 실측: ctf_ 34 / htf_ 19 /
+// inf_ 17 / 무접두 29). CTF=ctf_ 전용, DM=무접두(htf_/inf_ 제외, INF/HTF 미지원 스코프 §배경).
+// 모듈 스코프 캐시 — 화면 재방문마다 재요청하지 않게(오프라인 소메뉴 왕복이 잦음).
+let mapKeysCache: { dm: string[]; ctf: string[] } | null = null
+async function loadMapKeys(): Promise<{ dm: string[]; ctf: string[] }> {
+  if (mapKeysCache) return mapKeysCache
+  const manifest = await loadManifest()
+  const keys = Object.keys(manifest.maps)
+  mapKeysCache = {
+    ctf: keys.filter((k) => k.startsWith('ctf_')).sort(),
+    dm: keys.filter((k) => !k.startsWith('ctf_') && !k.startsWith('htf_') && !k.startsWith('inf_')).sort(),
+  }
+  return mapKeysCache
+}
+
+const LAST_MAP_KEY = 'jetfall.lastmap.v1'
+function loadLastMap(): string {
+  try { return localStorage.getItem(LAST_MAP_KEY) ?? 'random' } catch { return 'random' }
+}
+function saveLastMap(v: string): void {
+  try { localStorage.setItem(LAST_MAP_KEY, v) } catch { /* 스토리지 불가 — 세션 한정 동작 */ }
 }
 
 // loopback=true면 배포 없이 단일 브라우저에서 목 릴레이 사용 (개발/데모).
@@ -211,15 +236,64 @@ async function goOnline(ctx: Ctx): Promise<void> {
   }
 }
 
-// ── offline 모드 선택 소메뉴 ─────────────────────────────────────────────────
+// ── offline 모드+맵 선택 소메뉴 (M5: 모드 토글은 화면 유지, 맵 리스트만 갱신) ────────
 function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
   scr.appendChild(el('h1', 'jf-logo jf-logo-sm', GAME_TITLE))
   scr.appendChild(el('p', 'jf-tagline', 'OFFLINE BOTS'))
-  scr.appendChild(menuList([
-    ['Deathmatch', () => { handoff(ctx); ctx.opts.onOfflineBots('dm') }],
-    ['Capture the Flag', () => { handoff(ctx); ctx.opts.onOfflineBots('ctf') }],
-    ['Back', () => show(ctx, 'menu')],
-  ]))
+
+  const panel = el('div', 'jf-panel')
+  panel.style.minWidth = 'min(460px, 92vw)'
+  scr.appendChild(panel)
+
+  let mode: 'dm' | 'ctf' = 'dm'
+  let mapKey = loadLastMap() // 'random' 또는 저장된 맵 키
+  let keysByMode: { dm: string[]; ctf: string[] } | null = null
+
+  const drawMapList = (): void => {
+    const list = panel.querySelector('#jf-maplist') as HTMLElement | null
+    if (!list) return
+    if (!keysByMode) { list.innerHTML = '<div class="jf-muted">맵 목록 불러오는 중…</div>'; return }
+    const keys = keysByMode[mode]
+    if (mapKey !== 'random' && !keys.includes(mapKey)) mapKey = 'random' // 모드 전환 시 소속 안 맞으면 폴백
+    const options = ['random', ...keys]
+    list.innerHTML = `<div class="jf-maplist-scroll">${options.map((k) => `
+      <button class="jf-btn jf-maplist-item ${k === mapKey ? 'jf-on' : ''}" data-map="${k}">${k === 'random' ? 'Random' : k}</button>
+    `).join('')}</div>`
+    list.querySelectorAll<HTMLButtonElement>('[data-map]').forEach((b) => {
+      b.addEventListener('click', () => {
+        mapKey = b.dataset.map!
+        saveLastMap(mapKey)
+        drawMapList()
+      })
+    })
+  }
+
+  const draw = (): void => {
+    panel.innerHTML = `
+      <div class="jf-row">
+        <button class="jf-btn ${mode === 'dm' ? 'jf-btn-primary' : ''}" id="jf-mode-dm">Deathmatch</button>
+        <button class="jf-btn ${mode === 'ctf' ? 'jf-btn-primary' : ''}" id="jf-mode-ctf">Capture the Flag</button>
+      </div>
+      <div class="jf-label" style="margin-top:4px">Map</div>
+      <div id="jf-maplist"></div>
+      <div class="jf-row" style="margin-top:6px">
+        <button class="jf-btn jf-btn-primary" id="jf-start">Start Match</button>
+        <button class="jf-btn" id="jf-back">Back</button>
+      </div>`
+    panel.querySelector('#jf-mode-dm')!.addEventListener('click', () => { mode = 'dm'; draw() })
+    panel.querySelector('#jf-mode-ctf')!.addEventListener('click', () => { mode = 'ctf'; draw() })
+    panel.querySelector('#jf-start')!.addEventListener('click', () => {
+      handoff(ctx)
+      ctx.opts.onOfflineBots(mode, mapKey === 'random' ? undefined : mapKey)
+    })
+    panel.querySelector('#jf-back')!.addEventListener('click', () => show(ctx, 'menu'))
+    drawMapList()
+  }
+
+  draw()
+  void loadMapKeys().then((keys) => { keysByMode = keys; drawMapList() })
+    .catch(() => showToast('맵 목록 불러오기 실패 — Random으로 진행 가능'))
+
   versionTag(scr)
   escBack(ctx, 'menu')
 }

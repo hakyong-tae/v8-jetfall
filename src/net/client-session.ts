@@ -61,6 +61,12 @@ export class ClientSession {
     })
   }
 
+  // M5: 로컬 로드아웃(림보) 선택을 호스트로 전송 — 저빈도 JSON(ASSIGN/KILL과 동일 규약).
+  // 호출부(loadout-menu.ts)가 로컬 gs에도 이미 즉시 반영(예측) — 여기선 서버 권위 갱신용 통지만.
+  sendLoadout(selWeapon: number, secWep: number): void {
+    this.transport.send(MSG.LOADOUT, { selWeapon, secWep })
+  }
+
   // 매 60Hz 프레임: 내 입력을 내 스프라이트 control에 적용 → (스로틀) 호스트로 송신 →
   // 로컬 gs 전체를 한 틱 전진(자기=신선한 로컬입력, 원격=최근 릴레이 유지).
   tick(): void {

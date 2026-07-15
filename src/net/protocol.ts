@@ -6,6 +6,7 @@ export const MSG = {
   KILL: 'kill',     // 호스트→전체: killer/victim/weapon (C단계)
   START: 'start',   // 호스트→전체: 매치 시작 (A단계에서 종류만 예약)
   ASSIGN: 'assign', // B단계 신규 — 호스트→해당 계정: {account, num} 배정된 스프라이트 번호 통지 (저빈도, JSON 그대로)
+  LOADOUT: 'loadout', // M5 신규 — 클라→호스트: {selWeapon, secWep} 무기선택(림보) 반영 요청 (저빈도, JSON 그대로 — ASSIGN/KILL과 동일 규약)
 } as const
 
 export type MsgKind = (typeof MSG)[keyof typeof MSG]
@@ -262,4 +263,10 @@ export interface KillMsg {
   killer: number // 0 = 환경사/자살 (사실 4: who===num이면 코어가 kills를 안 올림)
   victim: number
   weaponNum: number // 킬러가 그 순간 들고 있던 무기 — 근사(설계 결정 3)
+}
+
+// ── M5: 무기선택(림보) 반영 요청 (저빈도 — JSON 그대로, ASSIGN/KILL과 동일 규약) ─
+export interface LoadoutMsg {
+  selWeapon: number // TSprite.selWeapon과 동일 규약 — 0=미선택, 그 외 guns[].num
+  secWep: number    // TPlayer.secWep과 동일 규약 — 0..SECONDARY_WEAPONS-1 오프셋
 }

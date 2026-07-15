@@ -9,7 +9,7 @@ import { ClientSession, type LocalInput } from '../net/client-session'
 import { encodeSnapshot } from '../net/protocol'
 import { setupTestGame } from './helpers'
 import { TEAM_NONE } from '../core/constants'
-import { createWeapons, loadWeaponsConfig, AK74_NUM } from '../core/weapons'
+import { createWeapons, loadWeaponsConfig, guns, AK74, AK74_NUM } from '../core/weapons'
 
 // 무기 동기화 테스트가 실전 guns[].num(AK74_NUM=3 등)을 요구하므로 실 무기 스탯 적재.
 // (client-session.test.ts와 동일 패턴 — guns[]는 모듈 전역이라 파일당 1회면 충분.)
@@ -101,7 +101,10 @@ describe('M3-B integration: host-authoritative movement over one LoopbackHub', (
       { account: 'bob', team: TEAM_NONE },
     ])
     const aliceNum = host.spriteNumOf('alice')!
-    expect(hostGs.sprite[aliceNum].weapon.num).toBe(AK74_NUM) // 전제: 호스트는 AK74 지급
+    // M5: spawnPlayers()는 맨손 스폰(원작 림보 메뉴 규약) — 이 테스트의 관심사는 무기지급 자체가
+    // 아니라 스냅샷 weaponNum 동기화이므로, 로드아웃 메뉴가 할 일(즉시장착)을 여기서 대신 흉내낸다.
+    hostGs.sprite[aliceNum].applyWeaponByNum(guns[AK74].num, 1)
+    expect(hostGs.sprite[aliceNum].weapon.num).toBe(AK74_NUM) // 전제: 위에서 AK74 장착
 
     const aGs = setupTestGame({ emptyMap: true })
     const aClient = new ClientSession(aT, aGs, 'alice', () => neutral())
