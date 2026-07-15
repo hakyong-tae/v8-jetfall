@@ -63,7 +63,9 @@ export class InputState {
     control.prone = this.keys.has('KeyX')
     control.jetpack = this.mouseButtons.has(2) // MOUSE3 = 우클릭
     control.fire = !this.menuOpen && this.mouseButtons.has(0) // MOUSE1 — 로드아웃 메뉴 열림 중엔 억제
-    control.changeWeapon = this.keys.has('KeyQ')
+    // 로드아웃 메뉴 토글도 KeyQ라, 메뉴 열림 중엔 코어 changeWeapon(무기 스왑 애니메이션)이
+    // 같은 키입력으로 같이 발동하지 않도록 fire와 동일하게 게이트한다(리뷰 finding #1).
+    control.changeWeapon = !this.menuOpen && this.keys.has('KeyQ')
     control.reload = this.keys.has('KeyR')
     control.throwWeapon = this.keys.has('KeyF')
     control.throwNade = this.keys.has('KeyE')

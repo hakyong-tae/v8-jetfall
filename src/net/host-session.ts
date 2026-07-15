@@ -10,7 +10,7 @@ import {
 } from './protocol'
 import { createSprite, createTPlayer, HUMAN, MAX_SPRITES, MAX_BULLETS } from '../core/sprites'
 import { randomizeStart } from '../core/things'
-import { guns, PRIMARY_WEAPONS, SECONDARY_WEAPONS } from '../core/weapons'
+import { guns, weaponNumToIndex, PRIMARY_WEAPONS, SECONDARY_WEAPONS } from '../core/weapons'
 import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
 import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG } from '../core/constants'
@@ -55,13 +55,29 @@ export class HostSession {
     if (num === undefined) return
     const spr = this.gs.sprite[num]
     if (!spr?.active || !spr.player) return
-    const primaryChanged = spr.selWeapon !== msg.selWeapon
-    const secChanged = spr.player.secWep !== msg.secWep
-    spr.selWeapon = msg.selWeapon
-    spr.player.secWep = msg.secWep
+
+    // 호스트가 권위 — 클라 값을 그대로 신뢰하지 않고 실존/활성 무기인지 검증한다(리뷰 finding
+    // #2: 미검증 selWeapon이 저장되면 respawn()/applyWeaponByNum이 guns[-1]=undefined를
+    // 역참조해 스프레드({...undefined}={})로 깨진 무기 오브젝트를 전체에 브로드캐스트하게 됨).
+    const primaryIdx = msg.selWeapon > 0 ? weaponNumToIndex(msg.selWeapon) : 0
+    const validPrimary =
+      msg.selWeapon === 0 ||
+      (primaryIdx >= 1 && primaryIdx <= PRIMARY_WEAPONS && this.gs.weaponActive[primaryIdx] === 1)
+    const validSec =
+      Number.isInteger(msg.secWep) &&
+      msg.secWep >= 0 &&
+      msg.secWep < SECONDARY_WEAPONS &&
+      this.gs.weaponActive[PRIMARY_WEAPONS + msg.secWep + 1] === 1
+
+    if (!validPrimary && !validSec) return // 완전 무효 페이로드 — 통째로 무시
+
+    const primaryChanged = validPrimary && spr.selWeapon !== msg.selWeapon
+    const secChanged = validSec && spr.player.secWep !== msg.secWep
+    if (validPrimary) spr.selWeapon = msg.selWeapon
+    if (validSec) spr.player.secWep = msg.secWep
     if (!spr.deadMeat) {
       if (primaryChanged && msg.selWeapon > 0) spr.applyWeaponByNum(msg.selWeapon, 1)
-      if (secChanged && msg.secWep >= 0 && msg.secWep < SECONDARY_WEAPONS) {
+      if (secChanged) {
         spr.applyWeaponByNum(guns[PRIMARY_WEAPONS + msg.secWep + 1].num, 2)
       }
     }

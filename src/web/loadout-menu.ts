@@ -148,13 +148,19 @@ export class LoadoutMenu {
     for (let w = groupStart; w <= groupEnd; w++) {
       this.gs.weaponSel[me][w] = w === weaponIndex ? 1 : 0
     }
+    // 안 바뀐 슬롯을 재적용하면 applyWeaponByNum이 guns[]를 깊은복사로 새로 지급해 탄약/장전
+    // 상태가 리셋된다(host-session.ts applyLoadout과 동일 이유로 diff 게이트, 리뷰 finding #3
+    // — 이미 든 무기를 재클릭/중복클릭해도 탄약이 리필되지 않게 한다).
     if (isPrimary) {
-      spr.selWeapon = guns[weaponIndex].num
-      if (!spr.deadMeat) spr.applyWeaponByNum(guns[weaponIndex].num, 1)
+      const num = guns[weaponIndex].num
+      const changed = spr.selWeapon !== num
+      spr.selWeapon = num
+      if (!spr.deadMeat && changed) spr.applyWeaponByNum(num, 1)
     } else {
       const secWep = weaponIndex - PRIMARY_WEAPONS - 1
+      const changed = spr.player.secWep !== secWep
       spr.player.secWep = secWep
-      if (!spr.deadMeat && secWep >= 0 && secWep < SECONDARY_WEAPONS) {
+      if (!spr.deadMeat && changed && secWep >= 0 && secWep < SECONDARY_WEAPONS) {
         spr.applyWeaponByNum(guns[weaponIndex].num, 2)
       }
     }
