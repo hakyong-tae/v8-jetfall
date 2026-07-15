@@ -20,8 +20,10 @@ export interface LoadoutMenuOpts {
 
 export class LoadoutMenu {
   private overlay: HTMLElement | null = null
-  private prevDeadMeat: boolean | null = null
-  private openedInitial = false
+  // M7 Task3: 개방창(open window) 추적. 개방창 = deadMeat(사망 대기) 또는 ceaseFireCounter>0(무적).
+  // 창에 진입하는 엣지에서 자동 오픈, 창을 벗어나는 엣지에서 자동 닫힘. 창 밖에선 open/toggle/pick
+  // 모두 무동작(=잠금). 다음 사망/무적으로 창이 다시 열리면 자동 해제.
+  private prevInWindow = false
 
   constructor(
     private gs: GameState,
@@ -34,10 +36,18 @@ export class LoadoutMenu {
     return this.overlay !== null
   }
 
+  // M7 Task3: 개방창 판정 — 사망 대기(deadMeat) 또는 리스폰 무적(ceaseFireCounter>0). 첫 스폰도
+  // 무적중이라 자연히 개방창이다. 코어 필드 읽기만(무수정).
+  private inOpenWindow(spr: { deadMeat: boolean; ceaseFireCounter: number }): boolean {
+    return spr.deadMeat === true || spr.ceaseFireCounter > 0
+  }
+
   open(): void {
     if (this.overlay) return
     const me = this.meFn()
-    if (me < 0 || !this.gs.sprite[me]?.active) return
+    const spr = this.gs.sprite[me]
+    if (me < 0 || !spr?.active) return
+    if (!this.inOpenWindow(spr)) return // M7: 개방창 밖에선 열지 않는다(잠금)
     const overlay = document.createElement('div')
     overlay.className = 'jf-loadout-overlay'
     document.body.appendChild(overlay)
@@ -56,19 +66,21 @@ export class LoadoutMenu {
     else this.open()
   }
 
-  // main.ts 렌더 루프가 매 프레임 호출 — 최초 스폰/사망 전이를 감지해 자동으로 연다.
+  // main.ts 렌더 루프가 매 프레임 호출 — 개방창 진입/이탈 엣지를 감지해 자동 오픈/닫힘.
   poll(): void {
     const me = this.meFn()
     if (me < 0) return
     const spr = this.gs.sprite[me]
     if (!spr?.active) return
-    if (!this.openedInitial) {
-      this.openedInitial = true
+    const inWindow = this.inOpenWindow(spr)
+    if (inWindow && !this.prevInWindow) {
+      // 개방창 진입 엣지(첫 스폰 무적, 매 사망 deadMeat, 리스폰 무적) — 자동 오픈.
       this.open()
-    } else if (this.prevDeadMeat === false && spr.deadMeat) {
-      this.open()
+    } else if (!inWindow && this.prevInWindow) {
+      // 개방창 이탈 엣지(살아있음 && ceaseFireCounter≤0) — 자동 닫힘 + 잠금(open/pick 무동작).
+      this.close()
     }
-    this.prevDeadMeat = spr.deadMeat
+    this.prevInWindow = inWindow
     // 열려있는 동안 선택 하이라이트만 갱신. innerHTML 재생성(=버튼 DOM 교체)은 절대 하지 않는다 —
     // 매 프레임 교체하면 실제 마우스 클릭의 mousedown/mouseup 사이에 프레임 경계가 끼며 버튼이
     // 새 요소로 갈려 click 이벤트가 발생하지 못한다(무기 선택 먹통 버그).
@@ -163,6 +175,7 @@ export class LoadoutMenu {
     const me = this.meFn()
     const spr = this.gs.sprite[me]
     if (!spr?.active || !spr.player) return
+    if (!this.inOpenWindow(spr)) return // M7: 개방창(사망/무적) 밖에선 무기 변경 불가(잠금)
     const groupStart = isPrimary ? 1 : PRIMARY_WEAPONS + 1
     const groupEnd = isPrimary ? PRIMARY_WEAPONS : MAIN_WEAPONS
     for (let w = groupStart; w <= groupEnd; w++) {

@@ -10,10 +10,18 @@
 // 원본에서도 입력 샘플링이 다시 덮어쓰는 값).
 import type { TControl } from '../core/sprites'
 
+// M7 Task4: "요청 슬롯 ≠ 현재 든 슬롯"일 때만 스왑(코어 changeWeapon 토글을 1회 엣지 발동).
+// 순수 함수로 분리해 단위테스트 가능하게 한다(코어 무수정, 값 비교만).
+export function shouldSwap(currentNum: number, targetNum: number): boolean {
+  return targetNum !== currentNum
+}
+
 export class InputState {
   private keys = new Set<string>()
   private mouseButtons = new Set<number>()
   private menuOpen = false // M5: 무기선택(림보) 메뉴가 열려있는 동안 좌클릭(발사) 억제용 게이트
+  // M7 Task4: 1/2 직접 무기전환 요청(엣지 트리거). keydown 전이에서 1회 세팅, consume에서 소비.
+  private slotSwitchReq: 1 | 2 | null = null
   mouseX = 0 // 캔버스(스크린) px
   mouseY = 0
 
@@ -29,13 +37,35 @@ export class InputState {
     return this.keys.has('Tab')
   }
 
+  // M7 Task4: keydown 처리(엣지 감지 포함). attach()의 실제 이벤트 리스너와 테스트가 공유한다
+  // (테스트는 DOM 없이 이 메서드를 직접 호출해 엣지 동작을 검증). keys 세트를 pressed-latch로
+  // 사용해 오토리핏(이미 눌려있는 키)은 재트리거하지 않는다.
+  noteKeyDown(code: string): void {
+    const wasDown = this.keys.has(code)
+    this.keys.add(code)
+    if (wasDown || this.menuOpen) return // 오토리핏/메뉴열림 중엔 슬롯전환 요청 억제
+    if (code === 'Digit1' || code === 'Numpad1') this.slotSwitchReq = 1
+    else if (code === 'Digit2' || code === 'Numpad2') this.slotSwitchReq = 2
+  }
+
+  noteKeyUp(code: string): void {
+    this.keys.delete(code)
+  }
+
+  // M7 Task4: 요청된 슬롯을 1회 반환(엣지 소비). 이후 다음 keydown 전까지 null.
+  consumeSlotSwitch(): 1 | 2 | null {
+    const r = this.slotSwitchReq
+    this.slotSwitchReq = null
+    return r
+  }
+
   attach(target: HTMLElement): void {
     window.addEventListener('keydown', (e) => {
-      this.keys.add(e.code)
+      this.noteKeyDown(e.code)
       // 스크롤/포커스 이동 방지 (게임 키만)
       if (['Space', 'Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(e.code)) e.preventDefault()
     })
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code))
+    window.addEventListener('keyup', (e) => this.noteKeyUp(e.code))
     window.addEventListener('blur', () => {
       this.keys.clear()
       this.mouseButtons.clear()
@@ -63,9 +93,10 @@ export class InputState {
     control.prone = this.keys.has('KeyX')
     control.jetpack = this.mouseButtons.has(2) // MOUSE3 = 우클릭
     control.fire = !this.menuOpen && this.mouseButtons.has(0) // MOUSE1 — 로드아웃 메뉴 열림 중엔 억제
-    // 로드아웃 메뉴 토글도 KeyQ라, 메뉴 열림 중엔 코어 changeWeapon(무기 스왑 애니메이션)이
-    // 같은 키입력으로 같이 발동하지 않도록 fire와 동일하게 게이트한다(리뷰 finding #1).
-    control.changeWeapon = !this.menuOpen && this.keys.has('KeyQ')
+    // M7 Task4: Q의 코어 changeWeapon(주↔보조 토글 스왑) 매핑 제거. Q는 이제 무기창 전용
+    // (loadout-menu.ts 자체 리스너). 무기전환은 1/2 직접선택 → main.ts가 슬롯 요청을 읽어
+    // 필요한 틱에만 control.changeWeapon=true를 세팅한다. 여기선 항상 false로 초기화.
+    control.changeWeapon = false
     control.reload = this.keys.has('KeyR')
     control.throwWeapon = this.keys.has('KeyF')
     control.throwNade = this.keys.has('KeyE')

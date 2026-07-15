@@ -20,7 +20,8 @@ export interface StartMatchArg { lobby: LobbyClient; mode: number; myTeam: numbe
 export interface LobbyOpts {
   onStartMatch: (a: StartMatchArg) => void
   // mapKey 생략(undefined) = Random(모드에 맞는 후보 중 시드 없는 선택은 main.ts 담당). §M5 Task1
-  onOfflineBots: (mode: 'dm' | 'ctf', mapKey?: string) => void
+  // respawnSeconds: M7 — 매치별 리스폰 대기시간(초). 생략 시 코어 기본(6s) 유지.
+  onOfflineBots: (mode: 'dm' | 'ctf', mapKey?: string, respawnSeconds?: number) => void
   onSettingsChange?: (s: GameSettings) => void
 }
 
@@ -45,6 +46,22 @@ function loadLastMap(): string {
 }
 function saveLastMap(v: string): void {
   try { localStorage.setItem(LAST_MAP_KEY, v) } catch { /* 스토리지 불가 — 세션 한정 동작 */ }
+}
+
+// M7: 리스폰 대기시간(초) 프리셋. 0/2/4/6(기본)/8/10. localStorage 영속.
+const RESPAWN_KEY = 'jetfall.respawn.v1'
+const RESPAWN_OPTIONS = [0, 2, 4, 6, 8, 10]
+const DEFAULT_RESPAWN = 6
+function loadLastRespawn(): number {
+  try {
+    const raw = localStorage.getItem(RESPAWN_KEY)
+    if (raw == null) return DEFAULT_RESPAWN
+    const n = Number(raw)
+    return Number.isFinite(n) && RESPAWN_OPTIONS.includes(n) ? n : DEFAULT_RESPAWN
+  } catch { return DEFAULT_RESPAWN }
+}
+function saveLastRespawn(v: number): void {
+  try { localStorage.setItem(RESPAWN_KEY, String(v)) } catch { /* 스토리지 불가 — 세션 한정 동작 */ }
 }
 
 // loopback=true면 배포 없이 단일 브라우저에서 목 릴레이 사용 (개발/데모).
@@ -270,6 +287,7 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
 
   let mode: 'dm' | 'ctf' = 'dm'
   let mapKey = loadLastMap() // 'random' 또는 저장된 맵 키
+  let respawnSeconds = loadLastRespawn() // M7: 리스폰 대기시간(초)
   let keysByMode: { dm: string[]; ctf: string[] } | null = null
 
   const drawMapList = (): void => {
@@ -297,6 +315,10 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
         <button class="jf-btn ${mode === 'dm' ? 'jf-btn-primary' : ''}" id="jf-mode-dm">${t('mode.dm')}</button>
         <button class="jf-btn ${mode === 'ctf' ? 'jf-btn-primary' : ''}" id="jf-mode-ctf">${t('mode.ctf')}</button>
       </div>
+      <div class="jf-label" style="margin-top:4px">${t('offline.respawnTime')}</div>
+      <div class="jf-row" id="jf-respawn">${RESPAWN_OPTIONS.map((s) => `
+        <button class="jf-btn ${s === respawnSeconds ? 'jf-on' : ''}" data-respawn="${s}">${s}s</button>
+      `).join('')}</div>
       <div class="jf-label" style="margin-top:4px">${t('offline.map')}</div>
       <div id="jf-maplist"></div>
       <div class="jf-row" style="margin-top:6px">
@@ -305,9 +327,12 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
       </div>`
     panel.querySelector('#jf-mode-dm')!.addEventListener('click', () => { mode = 'dm'; draw() })
     panel.querySelector('#jf-mode-ctf')!.addEventListener('click', () => { mode = 'ctf'; draw() })
+    panel.querySelectorAll<HTMLButtonElement>('[data-respawn]').forEach((b) => {
+      b.addEventListener('click', () => { respawnSeconds = Number(b.dataset.respawn); saveLastRespawn(respawnSeconds); draw() })
+    })
     panel.querySelector('#jf-start')!.addEventListener('click', () => {
       handoff(ctx)
-      ctx.opts.onOfflineBots(mode, mapKey === 'random' ? undefined : mapKey)
+      ctx.opts.onOfflineBots(mode, mapKey === 'random' ? undefined : mapKey, respawnSeconds)
     })
     panel.querySelector('#jf-back')!.addEventListener('click', () => show(ctx, 'menu'))
     drawMapList()

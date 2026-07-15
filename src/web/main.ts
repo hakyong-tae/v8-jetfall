@@ -12,7 +12,7 @@ import {
   addBotPlayer,
   type BotConfigEntry,
 } from '../core/sprites'
-import { createWeapons, loadWeaponsConfig, type WeaponsIniConfig } from '../core/weapons'
+import { createWeapons, loadWeaponsConfig, guns, PRIMARY_WEAPONS, type WeaponsIniConfig } from '../core/weapons'
 import { loadMapFile } from '../core/mapfile'
 import { loadWaypoints } from '../core/waypoints'
 import { updateFrame, wireGameHooks } from '../core/game'
@@ -36,7 +36,7 @@ import { GostekPool, loadGostekTextures } from './gostek'
 import { BulletsRenderer } from './bulletsrender'
 import { Hud } from './hud'
 import { SoundSystem, wireSound } from './sound'
-import { InputState } from './input'
+import { InputState, shouldSwap } from './input'
 import { Camera } from './camera'
 import { mountLobby, buildSettingsPanel, type StartMatchArg } from './lobby/lobby-ui'
 import { GAME_TITLE, GAME_TAGLINE } from './brand'
@@ -68,7 +68,7 @@ function eligibleMapKeys(manifest: Manifest, ctf: boolean): string[] {
 
 // ── 에셋 + 심 상태 로드 (tests/helpers.ts setupTestGame의 브라우저판). 봇전/네트전 공용.
 // mapKey 생략(undefined) 또는 해당 모드에 속하지 않으면 후보 중 Math.random() 선택(Random 버튼).
-async function loadGameAssets(ctf: boolean, mapKey?: string) {
+async function loadGameAssets(ctf: boolean, mapKey?: string, respawnSeconds?: number) {
   const manifest = await loadManifest()
   const read = await prefetchAnimFiles(manifest)
 
@@ -95,6 +95,10 @@ async function loadGameAssets(ctf: boolean, mapKey?: string) {
   // ── 게임모드. CTF면 CTF 깃발 무결성 가드가 첫 틱에 깃발 스폰.
   gs.svGamemode = ctf ? GAMESTYLE_CTF : GAMESTYLE_DEATHMATCH
   gs.svKilllimit = ctf ? 10 : 9999 // DM은 소크 중 라운드 리셋 방지(디버그 편의), CTF는 기본 캡
+  // M7 Task1: 매치별 리스폰 대기시간(초→틱, 60틱=1s). 미지정이면 코어 기본(360틱=6s) 유지.
+  if (respawnSeconds != null) gs.svRespawntime = Math.round(respawnSeconds * 60)
+  // M7 Task2: 리스폰 3초 무적(180틱). 봇전/넷전/ws 전 경로가 이 로더를 거치므로 여기 한 곳이면 충분.
+  gs.ceaseFireTime = 180
   return { gs, manifest, mapFile, mapKey: resolvedKey }
 }
 
@@ -183,6 +187,21 @@ function createScratchControl(): TControl {
     flagThrow: false, mouseAimX: 0, mouseAimY: 0, mouseDist: 0 }
 }
 
+// ── M7 Task4: 1/2 직접 무기전환. input.consumeSlotSwitch()가 반환한 슬롯 요청을 받아,
+// 로컬 병사가 살아있고 요청 슬롯이 현재 든 슬롯과 다르면 control.changeWeapon을 그 틱 한정 세팅.
+// 코어 스왑은 토글뿐이라 "다를 때만 1회"가 정확히 1회 스왑을 만든다(이미 그 슬롯이면 무동작).
+// 슬롯 num: 주무기=spr.selWeapon, 보조무기=guns[PRIMARY_WEAPONS+secWep+1].num. spr.weapon.num과 비교.
+// 넷/ws 경로도 changeWeapon이 INPUT 메시지 비트(protocol BIT.changeWeapon)로 실려 호스트에 전달됨.
+function applySlotSwitch(control: TControl, gs: GameState, me: number, req: 1 | 2 | null): void {
+  if (req == null || me < 0) return
+  const spr = gs.sprite[me]
+  if (!spr?.active || spr.deadMeat || !spr.player) return
+  const primaryNum = spr.selWeapon
+  const secondaryNum = guns[PRIMARY_WEAPONS + spr.player.secWep + 1]?.num
+  const targetNum = req === 1 ? primaryNum : secondaryNum
+  if (targetNum != null && shouldSwap(spr.weapon.num, targetNum)) control.changeWeapon = true
+}
+
 // TControl → LocalInput (seq/mouseDist 제외한 나머지 이름 그대로).
 function toLocalInput(c: TControl): LocalInput {
   return { left: c.left, right: c.right, up: c.up, down: c.down, fire: c.fire, jetpack: c.jetpack,
@@ -258,11 +277,11 @@ function attachEscMenu(
   return { paused: () => o.pausable && overlay !== null, dispose }
 }
 
-async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string): Promise<void> {
+async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSeconds?: number): Promise<void> {
   // ── 게임모드 — 메뉴 인자 우선, 없으면 URL ?mode=ctf 호환(개발 경로)
   const params = new URLSearchParams(window.location.search)
   const ctf = mode ? mode === 'ctf' : params.get('mode') === 'ctf'
-  const { gs, manifest, mapFile } = await loadGameAssets(ctf, mapKey)
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf, mapKey, respawnSeconds)
 
   // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
   const playerTeam = ctf ? TEAM_ALPHA : TEAM_NONE
@@ -326,6 +345,7 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string): Promise<void
       for (let i = 0; i < n; i++) {
         input.setMenuOpen(loadout.isOpen())
         input.applyTo(spr.control, camera.x, camera.y, app.screen.width, app.screen.height)
+        applySlotSwitch(spr.control, gs, me, input.consumeSlotSwitch())
         updateFrame(gs)
         loadout.poll()
       }
@@ -351,6 +371,7 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string): Promise<void
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
       input.applyTo(spr.control, camera.x, camera.y, app.screen.width, app.screen.height)
+      applySlotSwitch(spr.control, gs, me, input.consumeSlotSwitch()) // M7: 1/2 무기전환
       updateFrame(gs)
       acc -= TICK_MS
       ticks++
@@ -493,6 +514,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
       input.applyTo(scratch, camera.x, camera.y, app.screen.width, app.screen.height)
+      applySlotSwitch(scratch, gs, myNum, input.consumeSlotSwitch()) // M7: changeWeapon 비트가 INPUT 메시지로 실림
       currentLocalInput = toLocalInput(scratch)
       if (isHost) {
         if (myNum >= 0) Object.assign(gs.sprite[myNum].control, scratch) // 호스트 자신은 세션 경유 없이 직접 반영
@@ -569,6 +591,7 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
       input.applyTo(scratch, camera.x, camera.y, app.screen.width, app.screen.height)
+      applySlotSwitch(scratch, gs, myNum, input.consumeSlotSwitch()) // M7: 1/2 무기전환(INPUT 비트로 전달)
       currentLocalInput = toLocalInput(scratch)
       clientSession.tick()
       if (clientSession.myNum !== null) myNum = clientSession.myNum
@@ -614,7 +637,7 @@ function boot(): void {
       if (a.lobby.net.status === 'online') startNetMatch(a).catch(fail)
       else startBotMatch().catch(fail) // 미배포/오프라인 폴백
     },
-    onOfflineBots: (mode, mapKey) => { document.body.innerHTML = ''; startBotMatch(mode, mapKey).catch(fail) },
+    onOfflineBots: (mode, mapKey, respawnSeconds) => { document.body.innerHTML = ''; startBotMatch(mode, mapKey, respawnSeconds).catch(fail) },
     // 메뉴 화면에선 살아있는 SoundSystem이 없음 — 설정은 저장만 되고 인게임 진입 시 적용된다.
     // (인게임 ESC 설정은 attachEscMenu가 live sound에 즉시 반영)
   })
