@@ -1,5 +1,4 @@
 node_modules/
 dist/
 dist-server/
-public/assets/
 .DS_Store
