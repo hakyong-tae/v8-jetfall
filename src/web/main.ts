@@ -339,8 +339,10 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
     input,
     app,
     loadout,
-    // rAF 스로틀 환경(헤드리스 프리뷰)용 수동 스텝퍼
-    step: (n: number) => {
+    // rAF 스로틀 환경(헤드리스 프리뷰)용 수동 스텝퍼. focusNum을 주면 그 스프라이트를 카메라가
+    // 따라가고(없으면 로컬 me), 라이브 틱과 동일하게 world/bgLayer 위치까지 세팅해 완전한 프레임을
+    // 렌더한다(프로모 영상 캡처·눈검증용).
+    step: (n: number, focusNum?: number) => {
       for (let i = 0; i < n; i++) {
         input.setMenuOpen(loadout.isOpen())
         input.applyTo(spr.control, camera.x, camera.y, app.screen.width, app.screen.height)
@@ -352,6 +354,10 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
       entities.update(gs)
       hud.update(gs, me, app.screen.width, app.screen.height)
       hud.showScoreboard(gs, input.isTabHeld())
+      const fn = focusNum != null && gs.sprite[focusNum]?.active ? focusNum : me
+      camera.update(gs.spriteParts.pos[fn].x, gs.spriteParts.pos[fn].y, input.mouseX, input.mouseY, app.screen.width, app.screen.height)
+      world.position.set(app.screen.width / 2 - camera.x, app.screen.height / 2 - camera.y)
+      bgLayer.position.set(app.screen.width / 2, app.screen.height / 2 - camera.y)
       app.render()
     },
   }
