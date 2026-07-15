@@ -36,5 +36,7 @@ export function loadHostGame(opts: { ctf: boolean; mapName?: string }): GameStat
 
   gs.svGamemode = opts.ctf ? GAMESTYLE_CTF : GAMESTYLE_DEATHMATCH
   gs.svKilllimit = opts.ctf ? 10 : 9999
+  // M7 Task2: 리스폰 3초 무적(180틱) — 전용 Node 호스트도 웹 로더와 동일하게 맞춘다.
+  gs.ceaseFireTime = 180
   return gs
 }
