@@ -12,7 +12,7 @@ import {
   addBotPlayer,
   type BotConfigEntry,
 } from '../core/sprites'
-import { createWeapons, loadWeaponsConfig, guns, AK74, type WeaponsIniConfig } from '../core/weapons'
+import { createWeapons, loadWeaponsConfig, type WeaponsIniConfig } from '../core/weapons'
 import { loadMapFile } from '../core/mapfile'
 import { loadWaypoints } from '../core/waypoints'
 import { updateFrame, wireGameHooks } from '../core/game'
@@ -24,7 +24,7 @@ import {
   GAMESTYLE_CTF,
 } from '../core/constants'
 import { vector2 } from '../core/vector'
-import { loadManifest, prefetchAnimFiles, fetchBinary, loadTexture } from './assets'
+import { loadManifest, prefetchAnimFiles, fetchBinary, loadTexture, type Manifest } from './assets'
 import {
   buildPolyBuffers,
   createPolyMesh,
@@ -49,14 +49,25 @@ import { decideMigration } from '../net/host-migration'
 import { attemptReconnect } from '../net/reconnect'
 // (session.ts는 이번 단계에서 main.ts가 직접 소비하지 않음 — §Task4 "독립 seam" 선택, §자체리뷰)
 import type { TControl } from '../core/sprites'
+import { LoadoutMenu } from './loadout-menu'
 
-const MAP_NAME = 'ctf_ash' // manifest.maps 키
+const MAP_NAME_FALLBACK = 'ctf_ash' // manifest.maps 키 — 후보 목록이 비는 이상상황 최종 폴백
 const TICK_MS = 1000 / 60 // 16.6667ms 고정스텝
 const MAX_CATCHUP_TICKS = 5
 const NUM_BOTS = 4 // DM 봇 수 (CTF는 팀당 절반)
 
+// M5 Task1: manifest.maps 99종을 접두사로 필터(grep 실측 — ctf_ 34 / htf_ 19 / inf_ 17 / 무접두 29).
+// CTF=ctf_ 전용, DM=무접두(htf_/inf_ 제외 — INF/HTF 게임스타일 규칙 미구현, 기존 스코프와 동일).
+function eligibleMapKeys(manifest: Manifest, ctf: boolean): string[] {
+  const keys = Object.keys(manifest.maps)
+  return ctf
+    ? keys.filter((k) => k.startsWith('ctf_'))
+    : keys.filter((k) => !k.startsWith('ctf_') && !k.startsWith('htf_') && !k.startsWith('inf_'))
+}
+
 // ── 에셋 + 심 상태 로드 (tests/helpers.ts setupTestGame의 브라우저판). 봇전/네트전 공용.
-async function loadGameAssets(ctf: boolean) {
+// mapKey 생략(undefined) 또는 해당 모드에 속하지 않으면 후보 중 Math.random() 선택(Random 버튼).
+async function loadGameAssets(ctf: boolean, mapKey?: string) {
   const manifest = await loadManifest()
   const read = await prefetchAnimFiles(manifest)
 
@@ -71,14 +82,19 @@ async function loadGameAssets(ctf: boolean) {
   const weaponsJson = (await (await fetch('/assets/weapons.json')).json()) as { normal: WeaponsIniConfig }
   loadWeaponsConfig(weaponsJson.normal)
 
-  const mapFile = loadMapFile(await fetchBinary(manifest.maps[MAP_NAME]))
+  const eligible = eligibleMapKeys(manifest, ctf)
+  const resolvedKey =
+    mapKey && eligible.includes(mapKey)
+      ? mapKey
+      : (eligible[Math.floor(Math.random() * eligible.length)] ?? MAP_NAME_FALLBACK)
+  const mapFile = loadMapFile(await fetchBinary(manifest.maps[resolvedKey]))
   gs.map.loadData(mapFile)
   loadWaypoints(gs.botPath, mapFile.waypoints) // PolyMap.pas:236-255 BotPath 브리지
 
   // ── 게임모드. CTF면 CTF 깃발 무결성 가드가 첫 틱에 깃발 스폰.
   gs.svGamemode = ctf ? GAMESTYLE_CTF : GAMESTYLE_DEATHMATCH
   gs.svKilllimit = ctf ? 10 : 9999 // DM은 소크 중 라운드 리셋 방지(디버그 편의), CTF는 기본 캡
-  return { gs, manifest, mapFile }
+  return { gs, manifest, mapFile, mapKey: resolvedKey }
 }
 
 type LoadedAssets = Awaited<ReturnType<typeof loadGameAssets>>
@@ -241,11 +257,11 @@ function attachEscMenu(
   return { paused: () => o.pausable && overlay !== null, dispose }
 }
 
-async function startBotMatch(mode?: 'dm' | 'ctf'): Promise<void> {
+async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string): Promise<void> {
   // ── 게임모드 — 메뉴 인자 우선, 없으면 URL ?mode=ctf 호환(개발 경로)
   const params = new URLSearchParams(window.location.search)
   const ctf = mode ? mode === 'ctf' : params.get('mode') === 'ctf'
-  const { gs, manifest, mapFile } = await loadGameAssets(ctf)
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf, mapKey)
 
   // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
   const playerTeam = ctf ? TEAM_ALPHA : TEAM_NONE
@@ -259,9 +275,8 @@ async function startBotMatch(mode?: 'dm' | 'ctf'): Promise<void> {
   const r = randomizeStart(gs, playerTeam)
   const me = createSprite(gs, r.start, vector2(0, 0), 1, 255, player, true)
   if (me < 0) throw new Error('createSprite failed')
-  // AK-74 + 보조권총 로드아웃 (respawn이 selWeapon/secWep 규칙대로 지급 — Respawn 3580-3612)
-  gs.sprite[me].selWeapon = guns[AK74].num
-  gs.sprite[me].player!.secWep = 0
+  // M5: 맨손 스폰 — createSprite()가 이미 selWeapon=0/secWep=0(원작 규약, Sprites.pas:3574 상당).
+  // 무기는 로드아웃(림보) 메뉴가 클릭으로 골라 지급한다(LoadoutMenu, 이번 함수 하단에서 배선).
   gs.sprite[me].respawn()
 
   // ── 봇 스폰 (bots.json). DM=무팀 N기, CTF=팀당 N/2기(플레이어 alpha 보정 위해 bravo 우선).
@@ -291,6 +306,12 @@ async function startBotMatch(mode?: 'dm' | 'ctf'): Promise<void> {
 
   const spr = gs.sprite[me]
 
+  // ── M5: 무기선택(림보) 메뉴 — 봇전은 "호스트"가 곧 로컬 gs이므로 네트워크 전송 없이 직접
+  // gs를 조작(onNetworkPick 생략). Q 핫키 리스너는 attachEscMenu보다 먼저 등록해야 ESC가
+  // 메뉴부터 닫히고 일시정지 메뉴로 새지 않는다(§Task2 스택 규약).
+  const loadout = new LoadoutMenu(gs, () => me, manifest)
+  const disposeLoadoutHotkeys = loadout.attachHotkeys()
+
   // 개발 콘솔 디버그 핸들
   ;(window as unknown as Record<string, unknown>).__soldat = {
     gs,
@@ -298,26 +319,33 @@ async function startBotMatch(mode?: 'dm' | 'ctf'): Promise<void> {
     camera,
     input,
     app,
+    loadout,
     // rAF 스로틀 환경(헤드리스 프리뷰)용 수동 스텝퍼
     step: (n: number) => {
       for (let i = 0; i < n; i++) {
+        input.setMenuOpen(loadout.isOpen())
         input.applyTo(spr.control, camera.x, camera.y, app.screen.width, app.screen.height)
         updateFrame(gs)
+        loadout.poll()
       }
       gostek.update(gs, me)
       entities.update(gs)
       hud.update(gs, me, app.screen.width, app.screen.height)
+      hud.showScoreboard(gs, input.isTabHeld())
       app.render()
     },
   }
 
-  // ── ESC 오버레이 — 오프라인 봇전은 pausable(시뮬 일시정지)
-  const esc = attachEscMenu(app, sound, { pausable: true })
+  // ── ESC 오버레이 — 오프라인 봇전은 pausable(시뮬 일시정지). onLeave: 로드아웃 핫키 리스너 해제
+  // (안 하면 메뉴로 나갔다 재입장할 때 window keydown 리스너가 중첩된다).
+  const esc = attachEscMenu(app, sound, { pausable: true, onLeave: () => disposeLoadoutHotkeys() })
 
   // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
   let acc = 0
   app.ticker.add((ticker) => {
     if (esc.paused()) { acc = 0; sound.updateJetpack(false, null); return } // ESC 일시정지 가드
+    loadout.poll() // 최초 스폰/사망 전이 감지 → 자동 오픈
+    input.setMenuOpen(loadout.isOpen()) // 메뉴 열림 중 좌클릭(발사) 억제
     acc += ticker.deltaMS
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
@@ -332,6 +360,7 @@ async function startBotMatch(mode?: 'dm' | 'ctf'): Promise<void> {
     gostek.update(gs, me)
     entities.update(gs)
     hud.update(gs, me, app.screen.width, app.screen.height)
+    hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
 
     // 제트팩 루프음 — 로컬 병사가 제트 분사 중일 때만 (Control.pas 클라 전용 루프 배선).
     sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[me])
@@ -375,6 +404,17 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   let myNum = -1
   let hostSession: HostSession | null = null
   let clientSession: ClientSession | null = null
+
+  // ── M5: 무기선택(림보) 메뉴 — 온라인 매치. 호스트는 자기 gs가 곧 권위값이라 로컬 반영만으로
+  // 충분(HostSession.spawnPlayers가 맨손 스폰 + LOADOUT 핸들러가 다른 클라 선택을 받는다).
+  // 비-호스트 클라는 로컬 예측 반영 후 LOADOUT을 호스트로 전송 — isHost/clientSession은 마이그레이션
+  // 으로 재대입될 수 있어 콜백 안에서 최신값을 다시 읽는다(클로저가 위 let 변수를 그대로 참조).
+  const loadout = new LoadoutMenu(gs, () => myNum, manifest, {
+    onNetworkPick: (selWeapon, secWep) => {
+      if (!isHost && clientSession) clientSession.sendLoadout(selWeapon, secWep)
+    },
+  })
+  const disposeLoadoutHotkeys = loadout.attachHotkeys()
 
   if (isHost) {
     hostSession = new HostSession(transport, gs)
@@ -433,10 +473,11 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   // §설계결정5 수동우회용 디버그 훅(전용호스트 Plan-B의 dedicatedHostUrl 수동기록 등).
   ;(window as unknown as Record<string, unknown>).__soldatNet = { lobby: a.lobby, gs, net: transport }
 
-  // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈.
+  // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈 + 로드아웃 핫키 해제.
   const esc = attachEscMenu(app, sound, {
     pausable: false,
     onLeave: () => {
+      disposeLoadoutHotkeys()
       void a.lobby.leave().catch(() => undefined)
       if (dedicatedUrl) void transport.leaveRoom().catch(() => undefined)
     },
@@ -446,6 +487,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   let acc = 0
   app.ticker.add((ticker) => {
     checkMigrationAndReconnect() // ← M3-E 신규 감시 훅, 루프 나머지는 기존 그대로
+    if (myNum >= 0) { loadout.poll(); input.setMenuOpen(loadout.isOpen()) } // M5: 자동오픈+발사억제
     acc += ticker.deltaMS
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
@@ -468,6 +510,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     entities.update(gs)
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
+      hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
       // 스코어보드는 hud.update가 이미 gs.teamScore/kills를 읽어 그린다(스냅샷이 그 값을 덮어씀).
       // C단계 추가: 킬피드는 클라 세션 전용(호스트/오프라인 경로는 스킵 → 봇전 회귀 없음).
       if (clientSession) hud.setKillFeed(gs, clientSession.killFeed)
@@ -506,11 +549,21 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
   let myNum = -1
   ;(window as unknown as Record<string, unknown>).__soldatNet = { gs, net: transport, account }
 
+  // ── M5: 무기선택(림보) 메뉴 — ws 데모는 항상 클라이언트이므로 로컬 예측 + LOADOUT 전송 둘 다.
+  const loadout = new LoadoutMenu(gs, () => myNum, manifest, {
+    onNetworkPick: (selWeapon, secWep) => clientSession.sendLoadout(selWeapon, secWep),
+  })
+  const disposeLoadoutHotkeys = loadout.attachHotkeys()
+
   // ── ESC 오버레이 — ws 데모도 네트 매치(시뮬 계속). LEAVE 시 룸 이탈 + 파라미터 제거 후 메뉴.
-  attachEscMenu(app, sound, { pausable: false, onLeave: () => void transport.leaveRoom().catch(() => undefined) })
+  attachEscMenu(app, sound, {
+    pausable: false,
+    onLeave: () => { disposeLoadoutHotkeys(); void transport.leaveRoom().catch(() => undefined) },
+  })
 
   let acc = 0
   app.ticker.add((ticker) => {
+    if (myNum >= 0) { loadout.poll(); input.setMenuOpen(loadout.isOpen()) }
     acc += ticker.deltaMS
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
@@ -526,6 +579,7 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
       hud.setKillFeed(gs, clientSession.killFeed)
+      hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
       const spr = gs.sprite[myNum]
       sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[myNum])
       camera.update(gs.spriteParts.pos[myNum].x, gs.spriteParts.pos[myNum].y, input.mouseX, input.mouseY, app.screen.width, app.screen.height)
@@ -557,7 +611,7 @@ function boot(): void {
       if (a.lobby.net.status === 'online') startNetMatch(a).catch(fail)
       else startBotMatch().catch(fail) // 미배포/오프라인 폴백
     },
-    onOfflineBots: (mode) => { document.body.innerHTML = ''; startBotMatch(mode).catch(fail) },
+    onOfflineBots: (mode, mapKey) => { document.body.innerHTML = ''; startBotMatch(mode, mapKey).catch(fail) },
     // 메뉴 화면에선 살아있는 SoundSystem이 없음 — 설정은 저장만 되고 인게임 진입 시 적용된다.
     // (인게임 ESC 설정은 attachEscMenu가 live sound에 즉시 반영)
   })

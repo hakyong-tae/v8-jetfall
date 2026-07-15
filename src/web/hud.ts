@@ -10,9 +10,11 @@ import {
   COLT, KNIFE, CHAINSAW, LAW, BOW, BOW2, FLAMER, weaponNumToIndex, guns,
 } from '../core/weapons'
 import { GAMESTYLE_CTF, GAMESTYLE_INF, GAMESTYLE_HTF, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
+import { MAX_SPRITES } from '../core/sprites'
 
 // 무기 index → interface/guns 아이콘 키 (interface/guns/0..10 = 내부 무기번호 SOCOM..MINIGUN).
-const GUN_ICON: Record<number, string> = {
+// export: src/web/loadout-menu.ts(M5)가 무기선택(림보) 메뉴 아이콘 재사용.
+export const GUN_ICON: Record<number, string> = {
   [COLT]: 'interface/guns/0',
   [EAGLE]: 'interface/guns/1',
   [MP5]: 'interface/guns/2',
@@ -39,6 +41,8 @@ export class Hud {
   private readonly ammoText: Text
   private readonly topText: Text
   private readonly killFeedText: Text
+  private readonly scoreboardBg = new Graphics()
+  private readonly scoreboardText: Text
   private icons = new Map<string, Texture>()
   private screenW = 0
   private screenH = 0
@@ -58,12 +62,20 @@ export class Hud {
       style: { fill: 0xffe08a, fontSize: 14, fontFamily: 'monospace', align: 'right' },
     })
     this.killFeedText.anchor.set(1, 0) // 우측 상단 정렬
+    this.scoreboardText = new Text({
+      text: '',
+      style: { fill: 0xffffff, fontSize: 14, fontFamily: 'monospace', align: 'left' },
+    })
+    this.scoreboardBg.visible = false
+    this.scoreboardText.visible = false
     this.weaponIcon.anchor.set(1, 1)
     this.container.addChild(this.bars)
     this.container.addChild(this.weaponIcon)
     this.container.addChild(this.ammoText)
     this.container.addChild(this.topText)
     this.container.addChild(this.killFeedText)
+    this.container.addChild(this.scoreboardBg)
+    this.container.addChild(this.scoreboardText)
   }
 
   async load(manifest: Manifest): Promise<void> {
@@ -158,9 +170,79 @@ export class Hud {
     this.killFeedText.text = lines.join('\n')
     this.killFeedText.position.set(this.screenW - 12, 40)
   }
+
+  // ── M5: Tab 스코어보드. show=true인 동안(키 홀드) 매 프레임 호출 — 테이블 재구성은 저비용
+  // (MAX_SPRITES=32 스캔)이라 매 프레임 다시 그려도 무해. DM=이름/킬/데스, CTF=+팀/캡처+팀스코어
+  // (기존 상단 topText와 동일 gs.teamScore 소스).
+  showScoreboard(gs: GameState, show: boolean): void {
+    this.scoreboardBg.visible = show
+    this.scoreboardText.visible = show
+    if (!show) return
+
+    const isCtf = gs.svGamemode === GAMESTYLE_CTF
+    const rows = buildScoreboardRows(gs)
+    const pad = (s: string, n: number): string => (s.length >= n ? s.slice(0, n - 1) + ' ' : s.padEnd(n))
+    const lines: string[] = []
+    if (isCtf) {
+      lines.push(`Alpha ${gs.teamScore[TEAM_ALPHA]}   -   ${gs.teamScore[TEAM_BRAVO]} Bravo`)
+      lines.push('')
+      lines.push(pad('Name', 16) + pad('Team', 8) + pad('Kills', 7) + pad('Deaths', 8) + 'Caps')
+      for (const r of rows) {
+        lines.push(
+          pad(r.name, 16) + pad(teamLabel(r.team), 8) + pad(String(r.kills), 7) + pad(String(r.deaths), 8) + String(r.caps),
+        )
+      }
+    } else {
+      lines.push(pad('Name', 16) + pad('Kills', 7) + 'Deaths')
+      for (const r of rows) lines.push(pad(r.name, 16) + pad(String(r.kills), 7) + String(r.deaths))
+    }
+
+    this.scoreboardText.text = lines.join('\n')
+    const boxW = 360
+    const boxH = 30 + lines.length * 18
+    const boxX = this.screenW / 2 - boxW / 2
+    const boxY = 56
+    this.scoreboardText.position.set(boxX + 14, boxY + 10)
+    this.scoreboardBg.clear()
+    this.scoreboardBg.rect(boxX, boxY, boxW, boxH).fill({ color: 0x000000, alpha: 0.6 })
+  }
 }
 
 // 무기 index 유효 무기인지(디버그/방어용, 미사용 시 tree-shake).
 export function weaponHasIcon(weaponNum: number): boolean {
   return GUN_ICON[weaponNumToIndex(weaponNum)] !== undefined && guns.length > 0
+}
+
+// ── M5: 스코어보드 데이터 집계 (렌더 무관 순수 함수 — 단위테스트 대상) ───────────
+export interface ScoreboardRow {
+  num: number
+  name: string
+  team: number
+  kills: number
+  deaths: number
+  caps: number // player.flags (Things.pas 캡처 스코어링, CTF 전용 — DM에선 항상 0)
+}
+
+// active && player 필터로 봇 포함 전원 나열, Kills 내림차순(원작 Game.pas SortPlayers와 동일 기준 —
+// 동률 시 flags>deaths 세부정렬은 스코프 밖, Kills desc만 요구사항).
+export function buildScoreboardRows(gs: GameState): ScoreboardRow[] {
+  const rows: ScoreboardRow[] = []
+  for (let i = 1; i <= MAX_SPRITES; i++) {
+    const spr = gs.sprite[i]
+    if (!spr?.active || !spr.player) continue
+    rows.push({
+      num: i,
+      name: spr.player.name !== '' ? spr.player.name : `#${i}`,
+      team: spr.player.team,
+      kills: spr.player.kills,
+      deaths: spr.player.deaths,
+      caps: spr.player.flags,
+    })
+  }
+  rows.sort((a, b) => b.kills - a.kills)
+  return rows
+}
+
+function teamLabel(team: number): string {
+  return team === TEAM_ALPHA ? 'Alpha' : team === TEAM_BRAVO ? 'Bravo' : '-'
 }

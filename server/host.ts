@@ -7,7 +7,7 @@ import { TEAM_NONE } from '../src/core/constants'
 import { LoopbackHub } from '../src/net/loopback'
 import type { Transport } from '../src/net/types'
 
-function parseArgs(argv: string[]): { room: string; ctf: boolean; players: string[]; transport?: string; port: number; publicUrl?: string } {
+function parseArgs(argv: string[]): { room: string; ctf: boolean; players: string[]; transport?: string; port: number; publicUrl?: string; map?: string } {
   const get = (flag: string, def?: string) => {
     const i = argv.indexOf(flag)
     return i >= 0 ? argv[i + 1] : def
@@ -19,6 +19,9 @@ function parseArgs(argv: string[]): { room: string; ctf: boolean; players: strin
     transport: get('--transport'),
     port: Number(get('--port', '8765')),
     publicUrl: get('--public-url'), // M3-E: 플랜B 공개 ws URL(터널). 배포문서 §3 참조.
+    // M5: 봇전 맵 선택 UI는 온라인 룸 스코프 밖(스펙 §배경)이지만, 전용 호스트 CLI는 파일명
+    // (예: ctf_Ash.pms)을 직접 받게 해 둔다 — host-assets.ts는 이미 mapName을 받는다.
+    map: get('--map'),
   }
 }
 
@@ -26,7 +29,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   console.log(`[host] booting room=${args.room} mode=${args.ctf ? 'ctf' : 'dm'} transport=${args.transport ?? 'auto'}`)
 
-  const gs = loadHostGame({ ctf: args.ctf })
+  const gs = loadHostGame({ ctf: args.ctf, mapName: args.map })
   console.log('[host] assets loaded (map+anims+weapons)')
 
   // --transport loopback-selftest: 배포 없이 부트 시퀀스 자체를 스모크테스트하기 위한 스텁

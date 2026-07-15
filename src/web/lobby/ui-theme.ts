@@ -162,6 +162,40 @@ const THEME_CSS = `
   cursor: url('/assets/interface/cursor.png') 0 0, auto;
   user-select: none;
 }
+
+/* 봇전 로비 — 맵 리스트(스크롤 가능) */
+.jf-maplist-scroll {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 220px; overflow-y: auto; padding-right: 4px;
+}
+.jf-maplist-item {
+  text-align: left; text-transform: none; letter-spacing: 0.02em;
+  font-size: 13px; padding: 6px 12px;
+}
+.jf-maplist-item.jf-on { background: ${COLOR_YELLOW}; color: #14140e; border-color: ${COLOR_YELLOW}; }
+
+/* 인게임 무기선택(림보) 메뉴 — 화면 중앙 하단 오버레이 */
+.jf-loadout-overlay {
+  position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%);
+  z-index: 800;
+  font-family: ${FONT_STACK}; color: #e8e6d8;
+  cursor: url('/assets/interface/cursor.png') 0 0, auto;
+  user-select: none;
+}
+.jf-loadout-overlay * { cursor: inherit; }
+.jf-loadout-panel {
+  display: flex; gap: 18px;
+  background: rgba(12, 12, 7, 0.85); border: 1px solid #3a3a24; border-top: 2px solid ${COLOR_YELLOW};
+  padding: 14px 18px; box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+}
+.jf-loadout-col { display: flex; flex-direction: column; gap: 6px; min-width: 170px; }
+.jf-loadout-list { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+.jf-loadout-item {
+  display: flex; align-items: center; gap: 8px; text-align: left;
+  text-transform: none; letter-spacing: 0.02em; font-size: 13px; padding: 6px 10px;
+}
+.jf-loadout-item.jf-on { background: ${COLOR_YELLOW}; color: #14140e; border-color: ${COLOR_YELLOW}; }
+.jf-loadout-icon { width: 30px; height: 20px; object-fit: contain; image-rendering: pixelated; flex: none; }
 `
 
 // 테마 <style>을 document.head에 1회 주입 (중복 호출 안전).

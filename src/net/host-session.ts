@@ -6,11 +6,11 @@ import type { GameState } from '../core/state'
 import type { Transport } from './types'
 import {
   MSG, encodeSnapshot, decodeInput, encodeBullet, type InputMsg, type SnapshotSprite,
-  type FlagState, type KillMsg,
+  type FlagState, type KillMsg, type LoadoutMsg,
 } from './protocol'
 import { createSprite, createTPlayer, HUMAN, MAX_SPRITES, MAX_BULLETS } from '../core/sprites'
 import { randomizeStart } from '../core/things'
-import { guns, AK74 } from '../core/weapons'
+import { guns, PRIMARY_WEAPONS, SECONDARY_WEAPONS } from '../core/weapons'
 import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
 import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG } from '../core/constants'
@@ -38,9 +38,33 @@ export class HostSession {
 
   constructor(private transport: Transport, public readonly gs: GameState) {
     transport.onMessage((event, _payload, from) => {
-      if (event !== MSG.INPUT) return
-      this.lastInput.set(from, decodeInput(_payload as ArrayBuffer))
+      if (event === MSG.INPUT) {
+        this.lastInput.set(from, decodeInput(_payload as ArrayBuffer))
+      } else if (event === MSG.LOADOUT) {
+        this.applyLoadout(from, _payload as LoadoutMsg)
+      }
     })
+  }
+
+  // M5: 클라가 무기선택(림보) 메뉴에서 고른 값 반영 — 죽어있으면 다음 respawn()이 코어 규칙대로
+  // 자동 반영(selWeapon/secWep만 갱신), 살아있으면 즉시 applyWeaponByNum으로 장착(원작 규칙,
+  // main.ts의 로컬 봇전/호스트 경로와 동일 로직 — 실제로 바뀐 슬롯만 재장착해 안 바뀐 슬롯의
+  // 탄약이 리셋되지 않게 diff 게이트).
+  private applyLoadout(account: string, msg: LoadoutMsg): void {
+    const num = this.slotOf.get(account)
+    if (num === undefined) return
+    const spr = this.gs.sprite[num]
+    if (!spr?.active || !spr.player) return
+    const primaryChanged = spr.selWeapon !== msg.selWeapon
+    const secChanged = spr.player.secWep !== msg.secWep
+    spr.selWeapon = msg.selWeapon
+    spr.player.secWep = msg.secWep
+    if (!spr.deadMeat) {
+      if (primaryChanged && msg.selWeapon > 0) spr.applyWeaponByNum(msg.selWeapon, 1)
+      if (secChanged && msg.secWep >= 0 && msg.secWep < SECONDARY_WEAPONS) {
+        spr.applyWeaponByNum(guns[PRIMARY_WEAPONS + msg.secWep + 1].num, 2)
+      }
+    }
   }
 
   // 매치 시작 시 1회 — 룸의 전 플레이어에게 스프라이트 배정(슬롯 번호는 createSprite가 빈 슬롯
@@ -57,8 +81,8 @@ export class HostSession {
       const r = randomizeStart(this.gs, p.team)
       const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
       if (num < 0) continue // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
-      this.gs.sprite[num].selWeapon = guns[AK74].num
-      this.gs.sprite[num].player!.secWep = 0
+      // M5: 맨손 스폰 — createSprite()가 이미 selWeapon=0/secWep=0으로 초기화(원작 규약, Sprites.pas
+      // 3574 상당). 무기는 클라의 로드아웃(림보) 메뉴가 LOADOUT 메시지로 골라 지급한다(applyLoadout).
       this.gs.sprite[num].respawn()
       this.slotOf.set(p.account, num)
       // C단계: 킬/사망 diff 기준선을 스폰 시점에 시딩 — 첫 틱 이전(스크립트 데미지 등)에
