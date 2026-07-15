@@ -16,12 +16,12 @@ import {
 import { TEAM_NONE, GAMESTYLE_DEATHMATCH } from '../core/constants'
 import {
   createWeapons, loadWeaponsConfig, guns,
-  STEYRAUG, LAW, PRIMARY_WEAPONS, MAIN_WEAPONS,
+  STEYRAUG, LAW, COLT, NOWEAPON, PRIMARY_WEAPONS, MAIN_WEAPONS,
 } from '../core/weapons'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { InputState, shouldSwap } from '../web/input'
+import { InputState, shouldSwap, slotTargetNum } from '../web/input'
 
 const assetsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public/assets')
 const weaponsJson = JSON.parse(readFileSync(path.join(assetsDir, 'weapons.json'), 'utf-8'))
@@ -166,6 +166,18 @@ describe('M7 Task4 — slot switch (1=primary / 2=secondary)', () => {
     expect(shouldSwap(5, 5)).toBe(false)
     expect(shouldSwap(5, 7)).toBe(true)
     expect(shouldSwap(guns[STEYRAUG].num, guns[LAW].num)).toBe(true)
+  })
+
+  it('slotTargetNum: bare-hands primary maps to NOWEAPON num (finding #1 regression)', () => {
+    const NO = guns[NOWEAPON].num // 255
+    // 맨손(selWeapon=0) + 1(주무기) → 타겟은 NOWEAPON num이어야 함(0 아님).
+    expect(slotTargetNum(1, 0, NO, guns[COLT].num)).toBe(NO)
+    // 그래서 이미 맨손을 들고 있으면 shouldSwap(255,255)=false → 오작동 스왑 없음.
+    expect(shouldSwap(NO, slotTargetNum(1, 0, NO, guns[COLT].num)!)).toBe(false)
+    // 주무기 선택돼 있으면 그 num 그대로.
+    expect(slotTargetNum(1, guns[STEYRAUG].num, NO, guns[COLT].num)).toBe(guns[STEYRAUG].num)
+    // 2(보조무기)는 항상 보조 num.
+    expect(slotTargetNum(2, 0, NO, guns[COLT].num)).toBe(guns[COLT].num)
   })
 
   it('consumeSlotSwitch returns the slot once then null (edge-triggered)', () => {

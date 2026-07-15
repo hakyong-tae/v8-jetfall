@@ -16,6 +16,19 @@ export function shouldSwap(currentNum: number, targetNum: number): boolean {
   return targetNum !== currentNum
 }
 
+// M7 Task4: 슬롯 요청(1=주/2=보조)이 가리키는 무기 num을 계산(순수). selWeapon===0(주무기 미선택
+// =맨손)이면 실제 든 무기가 NOWEAPON이므로 그 num으로 맞춘다 — 안 그러면 맨손에서 1을 눌렀을 때
+// shouldSwap(255,0)=true로 잘못 보조로 스왑됨(리뷰 finding #1). 코어 무수정, 값 계산만.
+export function slotTargetNum(
+  req: 1 | 2,
+  selWeapon: number,
+  noWeaponNum: number,
+  secondaryNum: number | undefined,
+): number | undefined {
+  if (req === 1) return selWeapon > 0 ? selWeapon : noWeaponNum
+  return secondaryNum
+}
+
 export class InputState {
   private keys = new Set<string>()
   private mouseButtons = new Set<number>()

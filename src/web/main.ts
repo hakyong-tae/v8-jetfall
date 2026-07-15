@@ -12,7 +12,7 @@ import {
   addBotPlayer,
   type BotConfigEntry,
 } from '../core/sprites'
-import { createWeapons, loadWeaponsConfig, guns, PRIMARY_WEAPONS, type WeaponsIniConfig } from '../core/weapons'
+import { createWeapons, loadWeaponsConfig, guns, PRIMARY_WEAPONS, NOWEAPON, type WeaponsIniConfig } from '../core/weapons'
 import { loadMapFile } from '../core/mapfile'
 import { loadWaypoints } from '../core/waypoints'
 import { updateFrame, wireGameHooks } from '../core/game'
@@ -36,7 +36,7 @@ import { GostekPool, loadGostekTextures } from './gostek'
 import { BulletsRenderer } from './bulletsrender'
 import { Hud } from './hud'
 import { SoundSystem, wireSound } from './sound'
-import { InputState, shouldSwap } from './input'
+import { InputState, shouldSwap, slotTargetNum } from './input'
 import { Camera } from './camera'
 import { mountLobby, buildSettingsPanel, type StartMatchArg } from './lobby/lobby-ui'
 import { GAME_TITLE, GAME_TAGLINE } from './brand'
@@ -196,9 +196,8 @@ function applySlotSwitch(control: TControl, gs: GameState, me: number, req: 1 | 
   if (req == null || me < 0) return
   const spr = gs.sprite[me]
   if (!spr?.active || spr.deadMeat || !spr.player) return
-  const primaryNum = spr.selWeapon
   const secondaryNum = guns[PRIMARY_WEAPONS + spr.player.secWep + 1]?.num
-  const targetNum = req === 1 ? primaryNum : secondaryNum
+  const targetNum = slotTargetNum(req, spr.selWeapon, guns[NOWEAPON].num, secondaryNum)
   if (targetNum != null && shouldSwap(spr.weapon.num, targetNum)) control.changeWeapon = true
 }
 
