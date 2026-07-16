@@ -11,6 +11,7 @@ import {
 } from '../core/weapons'
 import { GAMESTYLE_CTF, GAMESTYLE_INF, GAMESTYLE_HTF, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
 import { MAX_SPRITES } from '../core/sprites'
+import { UNLIMITED_TIME } from '../net/room-settings'
 import { t } from './i18n'
 
 // 무기 index → interface/guns 아이콘 키 (interface/guns/0..10 = 내부 무기번호 SOCOM..MINIGUN).
@@ -151,11 +152,17 @@ export class Hud {
       gs.svGamemode === GAMESTYLE_CTF ||
       gs.svGamemode === GAMESTYLE_INF ||
       gs.svGamemode === GAMESTYLE_HTF
-    if (isTeam) {
-      this.topText.text = `Alpha ${gs.teamScore[TEAM_ALPHA]}   -   ${gs.teamScore[TEAM_BRAVO]} Bravo`
-    } else {
-      this.topText.text = `${t('hud.kills')} ${spr.player?.kills ?? 0} / ${gs.svKilllimit}`
+    let top = isTeam
+      ? `Alpha ${gs.teamScore[TEAM_ALPHA]}   -   ${gs.teamScore[TEAM_BRAVO]} Bravo`
+      : `${t('hud.kills')} ${spr.player?.kills ?? 0} / ${gs.svKilllimit}`
+    // M8: 시간제한 카운트다운(mm:ss) — svTimelimit로 유/무한을 판별한다. timeLimitCounter는
+    // 무제한 마커(UNLIMITED_TIME)여도 코어가 매 틱 감소시켜(gate는 mapChangeCounter 기준,
+    // game.ts:162) 값만으로는 무한 여부를 알 수 없기 때문.
+    if (gs.svTimelimit < UNLIMITED_TIME && gs.timeLimitCounter > 0) {
+      const secs = Math.ceil(gs.timeLimitCounter / 60)
+      top += `\n${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
     }
+    this.topText.text = top
     this.topText.position.set(screenW / 2, 10)
   }
 

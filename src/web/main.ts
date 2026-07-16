@@ -48,6 +48,7 @@ import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
 import { decideMigration } from '../net/host-migration'
 import { attemptReconnect } from '../net/reconnect'
+import { mergeRoomSettings, applyMatchSettings } from '../net/room-settings'
 // (session.ts는 이번 단계에서 main.ts가 직접 소비하지 않음 — §Task4 "독립 seam" 선택, §자체리뷰)
 import type { TControl } from '../core/sprites'
 import { LoadoutMenu } from './loadout-menu'
@@ -99,6 +100,10 @@ async function loadGameAssets(ctf: boolean, mapKey?: string, respawnSeconds?: nu
   if (respawnSeconds != null) gs.svRespawntime = Math.round(respawnSeconds * 60)
   // M7 Task2: 리스폰 3초 무적(180틱). 봇전/넷전/ws 전 경로가 이 로더를 거치므로 여기 한 곳이면 충분.
   gs.ceaseFireTime = 180
+  // M8: 잠복버그 수정 — state.ts 기본 timeLimitCounter=3600(=60초)이라 그대로 두면 어떤 매치든
+  // 1분 만에 nextMap(라운드 리셋)이 돈다(core game.ts:161-165). 전 경로 공통 시작점인 여기서
+  // svTimelimit(기본 36000=10분)로 재무장. 넷 매치는 이후 applyMatchSettings가 방 설정으로 덮는다.
+  gs.timeLimitCounter = gs.svTimelimit
   return { gs, manifest, mapFile, mapKey: resolvedKey }
 }
 
@@ -411,7 +416,15 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
 // 차이는 스폰(HostSession.spawnPlayers vs 로컬 1인)과 루프 본문(host.tick/client.tick)뿐.
 async function startNetMatch(a: StartMatchArg): Promise<void> {
   const ctf = a.mode === GAMESTYLE_CTF
-  const { gs, manifest, mapFile } = await loadGameAssets(ctf)
+  // M8: 방 설정 — 호스트가 start() 시점에 'random'을 확정 키로 해석해 roomState.settings에
+  // 기록했으므로(lobby-client.ts) 호스트/클라 전원이 같은 mapKey를 로드한다. 이전에는
+  // loadGameAssets(ctf)를 mapKey 없이 불러 각 클라가 각자 랜덤 맵을 뽑았다(충돌 지오메트리
+  // 디싱크 — M5 이후 잠복). settings 없는 옛 방은 merge가 기본값으로 폴백(안전).
+  const settings = mergeRoomSettings(a.lobby.roomState.settings)
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf, settings.mapKey)
+  // 리스폰/무기제한/킬·시간제한은 여기 한 곳에서만 반영(호스트/클라 동일 경로 → 동일 세팅).
+  // loadGameAssets의 respawnSeconds 인자는 일부러 안 쓴다 — 이중 적용 방지.
+  applyMatchSettings(gs, settings)
   const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
 
   const account = a.lobby.account
@@ -565,6 +578,7 @@ function fail(err: unknown): void {
 // URL: ?wshost=ws://localhost:8765&acc=alice[&mode=ctf]. 탭 2개를 서로 다른 acc로 열면 실제 대전.
 // 배포 없이 넷코드를 눈으로 확인하는 용도(스펙 §3.1-① 전용호스트 + own-ws 플랜B). 항상 클라이언트.
 async function startWsClientMatch(url: string, account: string, ctf: boolean): Promise<void> {
+  // M8 스코프 밖: ws 데모는 로비가 없어 방 설정이 없다 — 맵/규칙은 전용 호스트(npm run host) args가 결정.
   const { gs, manifest, mapFile } = await loadGameAssets(ctf)
   const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
   const transport = makeWsClientTransport(url, account)
