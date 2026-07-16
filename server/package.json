@@ -1,0 +1,12 @@
+{
+  "name": "soldat-web-server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "gameserver-node build",
+    "test": "gameserver-node test"
+  },
+  "devDependencies": {
+    "@agent8/gameserver-node": "^0.1.13"
+  }
+}
