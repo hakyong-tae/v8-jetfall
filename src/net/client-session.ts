@@ -81,7 +81,7 @@ export class ClientSession {
       c.mouseAimX = input.mouseAimX; c.mouseAimY = input.mouseAimY
       this.tickCount++
       if (this.tickCount % INPUT_SEND_EVERY_N_TICKS === 0) {
-        this.transport.send(MSG.INPUT, encodeInput({ seq: this.seq++, ...input })) // 원본 input.fire 그대로 전송
+        this.transport.send(MSG.INPUT, encodeInput({ seq: this.seq++, ...input }), true) // hot: throttle된 relayHot (호출캡 회피, 호스트는 최신 입력만 사용)
       }
     }
     updateFrame(this.gs)

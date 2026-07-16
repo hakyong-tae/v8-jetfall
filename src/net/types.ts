@@ -43,7 +43,9 @@ export interface Transport {
   leaveRoom(): Promise<void>
   getRoomState(): Promise<RoomState>
   updateRoomState(patch: Record<string, unknown>): Promise<void>  // 얕은병합, null=삭제
-  send(event: string, payload: unknown): void    // broadcastToRoom 릴레이
+  // broadcastToRoom 릴레이. hot=true는 고빈도 latest-wins(스냅샷/입력) — agent8 호출 캡을
+  // 넘지 않게 별도 throttle 함수로 나가고 초과분은 드롭돼도 무방. 미지정=신뢰성 이벤트(탄환/킬 등).
+  send(event: string, payload: unknown, hot?: boolean): void
   onMessage(handler: MessageHandler): void
   onRoomState(handler: (s: RoomState) => void): void
 }

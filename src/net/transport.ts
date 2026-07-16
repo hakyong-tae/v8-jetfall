@@ -101,9 +101,17 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       if (t.status !== 'online' || !server) return
       await server.remoteFunction('updateRoomState', [patch], { needResponse: false })
     },
-    send(event: string, payload: unknown) {
+    send(event: string, payload: unknown, hot?: boolean) {
       if (t.status !== 'online' || !server || !roomKey) return
-      server.remoteFunction('relay', [event, wrapForRelay(payload)], { needResponse: false }) // 바이너리→{__b64}
+      // agent8 remoteFunction 호출 캡은 함수 이름별 — 전부 'relay' 하나로 몰면 스냅샷(고빈도)이
+      // 캡을 넘겨 "Too many calls" 에러. 고빈도 latest-wins(스냅샷/입력)는 별도 'relayHot'로
+      // throttle(초과분 드롭, 최신만 유지)해 보내고, 개별 이벤트(탄환/킬/배정/로드아웃)는 'relay'로
+      // 신뢰성 유지 — nox-arena updatePos(throttle) vs castFx/reportKill(무throttle) 패턴과 동일.
+      if (hot) {
+        server.remoteFunction('relayHot', [event, wrapForRelay(payload)], { throttle: 50, needResponse: false })
+      } else {
+        server.remoteFunction('relay', [event, wrapForRelay(payload)], { needResponse: false }) // 바이너리→{__b64}
+      }
     },
     onMessage(h: MessageHandler) { msgHandler = h },
     onRoomState(h: (s: RoomState) => void) { stateHandler = h },

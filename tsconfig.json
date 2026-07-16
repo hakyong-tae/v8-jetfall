@@ -4,5 +4,7 @@
     "strict": true, "noUncheckedIndexedAccess": false,
     "types": ["vite/client", "node", "ws"], "skipLibCheck": true
   },
-  "include": ["src", "tools", "server"]
+  "include": ["src", "tools", "server"],
+  "//exclude": "server/src(agent8 릴레이, $global/$room 런타임 주입)와 server/test는 Verse8가 server/tsconfig.json으로 별도 빌드 — 루트 tsc/번들에서 제외.",
+  "exclude": ["server/src", "server/test"]
 }

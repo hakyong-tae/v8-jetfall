@@ -248,7 +248,7 @@ export class HostSession {
       teamScore1: this.gs.teamScore[1] ?? 0,
       teamScore2: this.gs.teamScore[2] ?? 0,
       sprites, flags,
-    }))
+    }), true) // hot: 고빈도 latest-wins → throttle된 relayHot로 (agent8 호출캡 회피)
   }
 
   // 실 구동용 — 테스트는 tick()을 직접 반복 호출하므로 미사용. 반환값은 정지 함수.

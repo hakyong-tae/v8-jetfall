@@ -60,7 +60,8 @@ class LoopbackTransport implements Transport {
     }
     for (const m of r.members) (m as LoopbackTransport).stateHandler({ ...r.state })
   }
-  send(event: string, payload: unknown) {
+  send(event: string, payload: unknown, _hot?: boolean) {
+    // 로컬 목 허브 — hot(agent8 throttle 힌트)은 무의미하므로 무시하고 전부 즉시 릴레이한다.
     if (!this.roomKey) return
     const r = (this.hub as any)._room(this.roomKey) as Room
     for (const m of r.members) {

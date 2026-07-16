@@ -33,4 +33,7 @@ class Server {
 
   // 실시간 릴레이 — 클라 send(event,payload) → 룸 전체에 from 포함 재전송
   relay(event, payload) { $room.broadcastToRoom('relay', { event, payload, from: $sender.account }) }
+  // 고빈도 latest-wins(스냅샷/입력)용 — 클라가 throttle 옵션으로 호출. 같은 'relay' 채널로
+  // 브로드캐스트해 수신 핸들러는 동일. 함수 이름을 나눠 relay 호출 캡을 분산한다.
+  relayHot(event, payload) { $room.broadcastToRoom('relay', { event, payload, from: $sender.account }) }
 }
