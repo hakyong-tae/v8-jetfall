@@ -1,4 +1,6 @@
 // src/net/types.ts — 넷 계층 공유 계약. 코어/agent8 구체 API에 의존하지 않는다.
+// (RoomSettings는 type-only import — 런타임 의존 없음.)
+import type { RoomSettings } from './room-settings'
 
 // 룸 참가자 (agent8 룸상태 p_{account} 값)
 export interface RoomPlayer {
@@ -18,6 +20,7 @@ export interface RoomState {
   roundEndsAt: number
   dedicatedHostUrl?: string // D단계: 플랜B(자체ws) 전용호스트의 공개 ws URL. agent8-in-node 모드면 미설정.
   hostEpoch?: number // M3-E: 호스트 승격 세대(스플릿브레인 강등 판단용, 마이그레이션 시 +1). 옵셔널 하위호환.
+  settings?: RoomSettings // M8: 방 상세설정(맵/무기/리스폰/킬·시간제한). 옵셔널 하위호환 — 소비 측은 mergeRoomSettings 경유.
   [playerKey: string]: unknown  // 'p_{account}' → RoomPlayer
 }
 

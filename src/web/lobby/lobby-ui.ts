@@ -9,6 +9,10 @@ import {
   GAMESTYLE_DEATHMATCH, GAMESTYLE_CTF,
   TEAM_ALPHA, TEAM_BRAVO, TEAM_SPECTATOR, TEAM_NONE,
 } from '../../core/constants'
+// M8: 방 설정 패널 — 무기명 표시(고유명사, i18n 비대상)용 guns + 그룹 경계 상수.
+// createWeaponsBase()는 로비 컨텍스트(매치 시작 전, loadGameAssets 미경유)에서 무기명을 채운다.
+import { guns, createWeaponsBase, EAGLE, PRIMARY_WEAPONS, MAIN_WEAPONS } from '../../core/weapons'
+import { mergeRoomSettings, canDisableWeapon } from '../../net/room-settings'
 import { GAME_TITLE, GAME_VERSION, CREDITS_LINES } from '../brand'
 import { loadSettings, saveSettings, type GameSettings } from '../settings'
 import { loadManifest } from '../assets'
@@ -260,7 +264,10 @@ async function goOnline(ctx: Ctx): Promise<void> {
   showToast('서버 접속 중…')
   try {
     if (!ctx.lc) {
-      const transport = await makeTransport(false)
+      // M8 개발/검증 seam: ?loopback=1 → 배포(agent8) 없이 인프로세스 목 릴레이로
+      // 로비/방 화면·설정 패널을 구동(단일 브라우저 한정 — 실멀티 아님).
+      const loopback = new URLSearchParams(window.location.search).get('loopback') === '1'
+      const transport = await makeTransport(loopback)
       ctx.lc = new LobbyClient(transport, 'Soldier')
     }
     const st = await ctx.lc.connect()
@@ -470,14 +477,29 @@ async function enterRoom(ctx: Ctx, key: string, createMode?: number): Promise<vo
   }
 }
 
-// ── room (참가자/팀/Ready/START) ─────────────────────────────────────────────
+// ── room (참가자/팀/Ready/START + M8 방 설정 패널) ───────────────────────────
+// 방장: 설정 편집 가능(변경 즉시 updateSettings → onRoomState로 전원 재렌더).
+// 비방장: 같은 패널 읽기전용(disabled). 화면 전체를 innerHTML로 재구성하는 기존 저빈도 패턴 유지.
+const KILL_LIMIT_OPTIONS = [5, 10, 15, 20]
+const TIME_LIMIT_OPTIONS = [5, 10, 15, 0] // 분. 0 = 무제한
+
 function renderRoom(ctx: Ctx, scr: HTMLElement): void {
   const lc = ctx.lc
   if (!lc) return show(ctx, 'menu')
   const panel = el('div', 'jf-panel')
   panel.style.minWidth = 'min(560px, 92vw)'
+  panel.style.maxHeight = '86vh'
+  panel.style.overflowY = 'auto' // M8: 설정 패널 추가로 세로 길어짐 — 작은 화면 스크롤
   scr.appendChild(panel)
   versionTag(scr)
+
+  // M8: 무기명(고유명사) — 로비는 loadGameAssets를 안 거치므로 guns[]가 비어있을 수 있다.
+  if (guns[EAGLE]?.name === '') createWeaponsBase()
+
+  // M8: 맵 후보(모드별) — offline 픽커와 동일 소스(loadMapKeys 모듈 캐시) 재사용.
+  let keysByMode: { dm: string[]; ctf: string[] } | null = null
+  void loadMapKeys().then((k) => { keysByMode = k; draw() })
+    .catch(() => showToast('맵 목록 불러오기 실패 — Random으로 진행'))
 
   const teamName = (t: number): string =>
     t === TEAM_ALPHA ? '<span style="color:#d23c3c;font-weight:700">Alpha</span>'
@@ -495,6 +517,41 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
         <button class="jf-btn jf-btn-bravo ${me?.team === TEAM_BRAVO ? 'jf-on' : ''}" data-team="${TEAM_BRAVO}">Bravo</button>
         <button class="jf-btn jf-btn-spec ${me?.team === TEAM_SPECTATOR ? 'jf-on' : ''}" data-team="${TEAM_SPECTATOR}">Spectator</button>
       </div>` : ''
+    // ── M8: 방 설정 패널 (방장=편집, 비방장=읽기전용 disabled) ──
+    const s = mergeRoomSettings(lc.roomState.settings)
+    const host = lc.isHost
+    const dis = host ? '' : 'disabled'
+    const mapKeys = keysByMode ? (isCtf ? keysByMode.ctf : keysByMode.dm) : null
+    const mapListHtml = mapKeys
+      ? `<div class="jf-maplist-scroll">${['random', ...mapKeys].map((k) => `
+          <button class="jf-btn jf-maplist-item ${k === s.mapKey ? 'jf-on' : ''}" data-map="${k}" ${dis}>${k === 'random' ? t('offline.random') : k}</button>`).join('')}</div>`
+      : `<div class="jf-muted">${s.mapKey === 'random' ? t('offline.random') : s.mapKey}</div>`
+    // settings.weaponActive는 0-based(0..13) ↔ guns[]는 1-based(1..14).
+    const wpnBtns = (from: number, to: number): string => {
+      let html = ''
+      for (let i = from; i < to; i++) {
+        html += `<button class="jf-btn ${s.weaponActive[i] === 1 ? 'jf-on' : ''}" data-wpn="${i}" ${dis}>${guns[i + 1]?.name || '#' + (i + 1)}</button>`
+      }
+      return html
+    }
+    const settingsHtml = `
+      <div class="jf-label" style="margin-top:8px">${t('room.settings')}${host ? '' : ' <span class="jf-muted">★host</span>'}</div>
+      <div class="jf-label">${t('offline.map')}</div>
+      <div id="jf-room-maplist">${mapListHtml}</div>
+      <div class="jf-label">${t('room.weapons')} — ${t('loadout.primary')}</div>
+      <div class="jf-row" style="flex-wrap:wrap">${wpnBtns(0, PRIMARY_WEAPONS)}</div>
+      <div class="jf-label">${t('room.weapons')} — ${t('loadout.secondary')}</div>
+      <div class="jf-row" style="flex-wrap:wrap">${wpnBtns(PRIMARY_WEAPONS, MAIN_WEAPONS)}</div>
+      <div class="jf-label">${t('offline.respawnTime')}</div>
+      <div class="jf-row">${RESPAWN_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === s.respawnSeconds ? 'jf-on' : ''}" data-rs="${v}" ${dis}>${v}s</button>`).join('')}</div>
+      <div class="jf-label">${isCtf ? t('room.capLimit') : t('room.killLimit')}</div>
+      <div class="jf-row">${KILL_LIMIT_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === s.killLimit ? 'jf-on' : ''}" data-kl="${v}" ${dis}>${v}</button>`).join('')}</div>
+      <div class="jf-label">${t('room.timeLimit')}</div>
+      <div class="jf-row">${TIME_LIMIT_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === s.timeLimitMin ? 'jf-on' : ''}" data-tl="${v}" ${dis}>${v === 0 ? t('room.unlimited') : v + 'm'}</button>`).join('')}</div>`
+
     panel.innerHTML = `
       <h2 class="jf-h">Room — ${isCtf ? t('mode.ctf') : t('mode.dm')}</h2>
       <table class="jf-table">
@@ -509,7 +566,8 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
         </tbody>
       </table>
       ${teamBtns}
-      <div class="jf-row">
+      ${settingsHtml}
+      <div class="jf-row" style="margin-top:6px">
         <button class="jf-btn ${me?.ready ? 'jf-btn-primary' : ''}" id="jf-ready">${me?.ready ? t('room.ready') + ' ✓' : t('room.ready')}</button>
         ${lc.isHost
           ? '<button class="jf-btn jf-btn-primary" id="jf-start">Start Match</button>'
@@ -518,8 +576,29 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
       </div>`
     panel.querySelectorAll('[data-team]').forEach((b) =>
       b.addEventListener('click', () => void lc.selectTeam(Number((b as HTMLElement).dataset.team))))
+    // ── M8: 설정 변경 핸들러 (방장 전용 — 비방장 버튼은 disabled라 클릭 불가, 이중 가드) ──
+    if (host) {
+      panel.querySelectorAll<HTMLButtonElement>('[data-map]').forEach((b) =>
+        b.addEventListener('click', () => void lc.updateSettings({ mapKey: b.dataset.map! })))
+      panel.querySelectorAll<HTMLButtonElement>('[data-wpn]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const i = Number(b.dataset.wpn)
+          const wa = [...mergeRoomSettings(lc.roomState.settings).weaponActive]
+          if (wa[i] === 1 && !canDisableWeapon(wa, i)) return // 그룹 최소 1종 가드 — 마지막 하나는 못 끔
+          wa[i] = wa[i] === 1 ? 0 : 1
+          void lc.updateSettings({ weaponActive: wa })
+        }))
+      panel.querySelectorAll<HTMLButtonElement>('[data-rs]').forEach((b) =>
+        b.addEventListener('click', () => void lc.updateSettings({ respawnSeconds: Number(b.dataset.rs) })))
+      panel.querySelectorAll<HTMLButtonElement>('[data-kl]').forEach((b) =>
+        b.addEventListener('click', () => void lc.updateSettings({ killLimit: Number(b.dataset.kl) })))
+      panel.querySelectorAll<HTMLButtonElement>('[data-tl]').forEach((b) =>
+        b.addEventListener('click', () => void lc.updateSettings({ timeLimitMin: Number(b.dataset.tl) })))
+    }
     panel.querySelector('#jf-ready')!.addEventListener('click', () => void lc.setReady(!(me?.ready ?? false)))
-    panel.querySelector('#jf-start')?.addEventListener('click', () => void lc.start().catch(() => showToast('시작 실패')))
+    // M8: 시작 시 'random' 해석용 후보 풀 전달 — 호스트가 확정 키를 settings에 기록(디싱크 수정).
+    panel.querySelector('#jf-start')?.addEventListener('click', () =>
+      void lc.start(mapKeys ?? undefined).catch(() => showToast('시작 실패')))
     panel.querySelector('#jf-leave')!.addEventListener('click', () => {
       void lc.leave().catch(() => undefined)
       show(ctx, 'lobby')
