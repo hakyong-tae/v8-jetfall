@@ -119,10 +119,9 @@ export async function realProvider(): Promise<Agent8Provider> {
   if (!configured) {
     return { getInstance: () => { throw new Error('agent8 not configured') }, configured: false }
   }
-  // @agent8/gameserver는 배포시에만 설치되는 선택적 의존성. 변수 지정자 + @vite-ignore로
-  // Vite/Rollup 정적 분석·번들에서 제외 → 미설치 dev/build에서 resolve 에러 방지. 배포시 실제 로드.
-  const mod = '@agent8/gameserver'
-  const { GameServer } = (await import(/* @vite-ignore */ mod)) as { GameServer: { getInstance: () => unknown } }
+  // @agent8/gameserver는 이제 정식 의존성(package.json) — vite가 번들에 포함한다. 동적 import는
+  // VITE_AGENT8_VERSE가 세팅됐을 때만 실행되므로(위 게이트) 오프라인 빌드에선 로드 코드가 안 돈다.
+  const { GameServer } = (await import('@agent8/gameserver')) as { GameServer: { getInstance: () => unknown } }
   return {
     getInstance: () => GameServer.getInstance() as unknown as ReturnType<Agent8Provider['getInstance']>,
     configured: true,
