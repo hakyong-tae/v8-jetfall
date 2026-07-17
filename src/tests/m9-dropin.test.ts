@@ -13,7 +13,7 @@ import { ClientSession, type LocalInput } from '../net/client-session'
 import { pickAutoTeam, canJoinRoom, ROOM_CAP } from '../net/dropin'
 import { setupTestGame } from './helpers'
 import {
-  TEAM_NONE, TEAM_ALPHA, TEAM_BRAVO, TEAM_SPECTATOR, GAMESTYLE_DEATHMATCH,
+  TEAM_NONE, TEAM_ALPHA, TEAM_BRAVO, TEAM_SPECTATOR, GAMESTYLE_DEATHMATCH, GAMESTYLE_CTF,
 } from '../core/constants'
 import type { RoomPlayer } from '../net/types'
 
@@ -149,5 +149,60 @@ describe('M9 canJoinRoom — 정원 게이트', () => {
     expect(canJoinRoom(7)).toBe(true)
     expect(canJoinRoom(8)).toBe(false)
     expect(canJoinRoom(9)).toBe(false)
+  })
+})
+
+// ── 리뷰 후속(request-changes 반영) ─────────────────────────────────────────────
+
+describe('M9 리뷰 #1 — CTF 난입 팀배정 레이스: 호스트가 스폰 시점에 권위 배정', () => {
+  it('p_ 팀이 아직 NONE인 채 syncRoster가 돌아도 무소속으로 스폰되지 않는다', () => {
+    const hub = new LoopbackHub()
+    const gs = setupTestGame()
+    gs.svGamemode = GAMESTYLE_CTF
+    const host = new HostSession(hub.createTransport('host'), gs)
+    // 기존 로스터: 알파 2 / 브라보 1 → NONE 난입자는 브라보로 배정돼야 함
+    host.spawnPlayers([
+      { account: 'a1', team: TEAM_ALPHA },
+      { account: 'a2', team: TEAM_ALPHA },
+      { account: 'b1', team: TEAM_BRAVO },
+    ])
+    host.syncRoster([
+      { account: 'a1', team: TEAM_ALPHA },
+      { account: 'a2', team: TEAM_ALPHA },
+      { account: 'b1', team: TEAM_BRAVO },
+      { account: 'late', team: TEAM_NONE }, // ← selectTeam 에코가 아직 안 온 순간의 난입자
+    ])
+    const num = host.spriteNumOf('late')!
+    expect(num).toBeGreaterThan(0)
+    expect(gs.sprite[num].player!.team).toBe(TEAM_BRAVO) // 무소속 아님 + 적은 팀
+  })
+
+  it('DM(비CTF)에서는 팀을 건드리지 않는다(NONE 그대로)', () => {
+    const hub = new LoopbackHub()
+    const gs = setupTestGame()
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    const host = new HostSession(hub.createTransport('host'), gs)
+    host.syncRoster([{ account: 'solo', team: TEAM_NONE }])
+    const num = host.spriteNumOf('solo')!
+    expect(gs.sprite[num].player!.team).toBe(TEAM_NONE)
+  })
+})
+
+describe('M9 리뷰 #2 — ASSIGN 역방향 유일성(슬롯 재사용 시 옛 계정 매핑 제거)', () => {
+  it('같은 num으로 새 ASSIGN이 오면 그 num의 옛 계정 매핑이 제거된다', async () => {
+    const hub = new LoopbackHub()
+    const hostT = hub.createTransport('host')
+    const clientT = hub.createTransport('watcher')
+    await hostT.joinRoom('r')
+    await clientT.joinRoom('r')
+    const gs = setupTestGame()
+    const cs = new ClientSession(clientT, gs, 'watcher', () => neutral())
+    hostT.send('assign', { account: 'old', num: 2 })
+    await flush()
+    expect(cs.knownSlots.get('old')).toBe(2)
+    hostT.send('assign', { account: 'new', num: 2 }) // 슬롯 2 재사용(이탈+난입 동시)
+    await flush()
+    expect(cs.knownSlots.get('new')).toBe(2)
+    expect(cs.knownSlots.has('old')).toBe(false) // ← 승격 시 kill 오발 방지
   })
 })

@@ -13,7 +13,8 @@ import { randomizeStart } from '../core/things'
 import { guns, weaponNumToIndex, PRIMARY_WEAPONS, SECONDARY_WEAPONS } from '../core/weapons'
 import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
-import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG } from '../core/constants'
+import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
+import { pickAutoTeamFromTeams } from './dropin'
 
 export interface HostSessionPlayer { account: string; team: number }
 
@@ -93,8 +94,20 @@ export class HostSession {
 
   // 플레이어 1명 스폰 + ASSIGN 통지 — spawnPlayers(시작)와 syncRoster(M9 난입)가 공유.
   private spawnOne(p: HostSessionPlayer): boolean {
+    // 리뷰 finding #1: CTF에서 팀이 아직 미정(NONE 등)이면 호스트가 스폰 시점에 권위로 배정.
+    // 클라의 joinRoom(p_ 팀 NONE 기록)→selectTeam 2단계 쓰기 사이에 syncRoster가 먼저 돌면
+    // 무소속으로 스폰돼 영구히 남던 레이스를 호스트 측에서 봉합. 팀 진실은 스냅샷으로 전파.
+    let team = p.team
+    if (this.gs.svGamemode === GAMESTYLE_CTF && team !== TEAM_ALPHA && team !== TEAM_BRAVO) {
+      const teams: number[] = []
+      for (const [, num] of this.slotOf) {
+        const spr = this.gs.sprite[num]
+        if (spr?.active && spr.player) teams.push(spr.player.team)
+      }
+      team = pickAutoTeamFromTeams(teams)
+    }
     const tPlayer = createTPlayer()
-    tPlayer.team = p.team
+    tPlayer.team = team
     tPlayer.controlMethod = HUMAN
     // 이름이 비면 코어 respawn()이 조기 반환(sprites.ts:3506 `{$IFNDEF SERVER}` 가드)해
     //   사망 후 영구히 리스폰 못 함 — 계정명을 부여해 리스폰 경로를 활성화.

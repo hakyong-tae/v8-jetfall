@@ -22,3 +22,16 @@ export function pickAutoTeam(players: Record<string, RoomPlayer>): number {
   }
   return bravo < alpha ? TEAM_BRAVO : TEAM_ALPHA
 }
+
+// 팀 번호 배열판(호스트용) — 호스트는 roomState p_ 대신 자기 로스터(slotOf 스프라이트)의 팀을
+// 집계해 배정한다(리뷰 finding #1: 클라의 join→selectTeam 2단계 쓰기 레이스로 p_ 팀이 아직
+// NONE인 순간 스폰될 수 있어, 팀 결정 권위를 호스트 스폰 시점으로 옮김).
+export function pickAutoTeamFromTeams(teams: number[]): number {
+  let alpha = 0
+  let bravo = 0
+  for (const t of teams) {
+    if (t === TEAM_ALPHA) alpha++
+    else if (t === TEAM_BRAVO) bravo++
+  }
+  return bravo < alpha ? TEAM_BRAVO : TEAM_ALPHA
+}

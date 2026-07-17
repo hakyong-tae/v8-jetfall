@@ -11,16 +11,17 @@ class Server {
   }
 
   async joinRoom(key, mode) {
+    const rooms = await $global.getCollectionItems('soldat_rooms', { limit: 100 }).catch(() => [])
     let target = key
     if (!target) {
-      const rooms = await $global.getCollectionItems('soldat_rooms', { limit: 100 }).catch(() => [])
       for (const r of rooms) if ((r.count || 0) < CAP && !r.started) { target = r.key; break }
       if (!target) { let n = 1; const have = new Set(rooms.map((r) => r.key)); while (have.has('sr' + n)) n++; target = 'sr' + n }
     }
     await $global.joinRoom(target)
-    // mode는 클라 인자 우선(등록 시점 roomState는 비어 mode 0 오표기 버그). 쓰기 실패는 삼키되
-    // touchRoom 하트비트가 자가치유.
-    await $global.updateCollectionItem('soldat_rooms', target, { key: target, count: await this._count(), mode: mode ?? (await $room.getRoomState()).mode ?? 0, started: false }).catch(() => {})
+    // mode는 클라 인자 우선(등록 시점 roomState는 비어 mode 0 오표기 버그). started는 기존 값
+    // 보존(M9 난입이 목록을 '시작 전'으로 되돌리지 않게). 쓰기 실패는 touchRoom이 자가치유.
+    const existing = rooms.find((r) => r.key === target)
+    await $global.updateCollectionItem('soldat_rooms', target, { key: target, count: await this._count(), mode: mode ?? existing?.mode ?? (await $room.getRoomState()).mode ?? 0, started: !!existing?.started }).catch(() => {})
     return { roomId: target }
   }
   // 방 목록 upsert 하트비트(방장 주기 호출) — 컬렉션 쓰기 실패 자가치유 + 인원/모드/진행 최신화.

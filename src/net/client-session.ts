@@ -47,6 +47,14 @@ export class ClientSession {
     transport.onMessage((event, payload) => {
       if (event === MSG.ASSIGN) {
         const a = payload as { account: string; num: number }
+        // 리뷰 finding #2: 역방향 유일성 — 이탈+난입이 같은 프레임에 겹치면 해제된 슬롯 num이
+        // 즉시 재사용되고, 그 num이 빠진 스냅샷이 한 번도 안 나가 pruneDeparted가 못 지운다.
+        // 옛 계정→같은 num 매핑이 남으면 호스트 승격 시 syncRoster가 현 플레이어를 kill()하고
+        // 새 계정은 영구 미스폰. ASSIGN이 진실이므로 같은 num의 다른 계정 매핑을 제거해 수렴
+        // (60틱 재방송이 지속 보정).
+        for (const [account, n] of [...this.knownSlots]) {
+          if (n === a.num && account !== a.account) this.knownSlots.delete(account)
+        }
         this.knownSlots.set(a.account, a.num) // M3-E: 기존엔 자기 것만 봤음
         if (a.account === this.myAccount) this.myNum = a.num
       } else if (event === MSG.SNAPSHOT) {
@@ -143,9 +151,10 @@ export class ClientSession {
   }
 
   private applySnapshot(msg: SnapshotMsg): void {
+    this.pruneDeparted(msg) // M9: 이탈자 정리 먼저 — kill()의 "팀 전멸 시 스코어 리셋"(코어)이
+    // 스냅샷 권위값을 지우지 않도록 순서 고정(리뷰 #5: 이탈 직후 1스냅샷 HUD 깜빡임 방지).
     this.gs.teamScore[1] = msg.teamScore1 // 설계 결정 3: 스코어 진실은 항상 스냅샷이 덮어씀
     this.gs.teamScore[2] = msg.teamScore2
-    this.pruneDeparted(msg) // M9: 이탈자 로컬 정리
 
     for (const s of msg.sprites) {
       this.ensureLocalSprite(s.num, s.team, { x: s.posX, y: s.posY })

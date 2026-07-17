@@ -494,6 +494,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   // ── M3-E: 마이그레이션 감시 + 재접속 감시 + 오프라인 폴백(매 프레임 저비용 값 비교) ──
   let reconnecting = false
   let degraded = false
+  const matchStartedAt = Date.now() // M9(리뷰 #3): 유령 방 난입 시 무스냅샷 타임아웃 기준점
   function degradeToOfflineBots(reason: string): void {
     if (degraded) return
     degraded = true
@@ -523,6 +524,13 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
       return
     }
     if (!clientSession) return
+    // M9(리뷰 #3): 유령 started 방 난입 가드 — 목록엔 남았지만 호스트가 없는 방에 들어가면
+    // 첫 스냅샷이 영영 안 온다(decideMigration은 lastSnapshotAt===0이면 판단 보류). 매치 진입
+    // 후 8초 내 무수신이면 봇전 폴백.
+    if (clientSession.lastSnapshotAt === 0 && Date.now() - matchStartedAt > 8000) {
+      degradeToOfflineBots('no snapshot from host (dead room?)')
+      return
+    }
     const action = decideMigration(clientSession.lastSnapshotAt, {
       getPlayers: () => a.lobby.players, myAccount: account,
       currentHostAccount: a.lobby.roomState.hostAccount, nowFn: () => Date.now(),
