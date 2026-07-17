@@ -67,23 +67,31 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       const setStatus = (v: Transport['status']) => { (t as { status: Transport['status'] }).status = v }
       if (!configured) { setStatus('offline'); return t.status }
       setStatus('connecting')
-      // 실배포 관찰: 릴레이 첫 WebSocket이 한 번 끊기고 SDK 내부 백오프(1s→2s) 후에 붙는 패턴이
-      // 흔하다("WebSocket is closed before the connection is established" → Reconnection successful).
-      // 1회 시도 후 즉시 offline 단정하면 SDK는 뒤에서 성공하는데 게임은 "서버 미배포"로 오판 —
-      // 짧은 대기를 끼운 3회 재시도로 흡수한다(로비는 그동안 '서버 접속 중…' 토스트 유지).
+      // 실배포 관찰 2제: ①릴레이 첫 WS가 끊기고 SDK 내부 백오프 후 붙는 패턴 → 1회 실패로
+      // offline 단정 금지. ②connect()를 "다시" 부르면 SDK가 붙는 중/붙은 소켓을 찢고 재시작해
+      // SDK 자체 재접속과 싸우는 플랩 증폭(라이브 콘솔: Connected 직후 connect false→closed
+      // before established 순환). 그래서 connect()는 딱 1회만 부르고, 타임아웃이면 재-connect
+      // 대신 가벼운 remoteFunction(listRooms) 폴링으로 "이미 붙었는지"를 확인한다 — SDK의
+      // 자체 재접속을 방해하지 않고 성공 시점만 감지.
       const ATTEMPTS = provider.connectAttempts ?? 3
       const RETRY_DELAY_MS = provider.retryDelayMs ?? 1500
+      const s = provider.getInstance()
+      const adopt = (): Transport['status'] => {
+        server = s
+        ;(t as { account: string }).account = s.account || 'me'
+        setStatus('online')
+        return t.status
+      }
+      try {
+        await withTimeout(s.connect(), timeoutMs)
+        return adopt()
+      } catch { /* 느린 성공/자체 재접속 가능 — 아래 폴링으로 확인 */ }
       for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))
         try {
-          const s = provider.getInstance()
-          await withTimeout(s.connect(), timeoutMs)
-          server = s
-          ;(t as { account: string }).account = s.account || 'me'
-          setStatus('online')
-          return t.status
-        } catch {
-          if (attempt < ATTEMPTS - 1) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))
-        }
+          await withTimeout(s.remoteFunction('listRooms', []), timeoutMs) // 응답 오면 = 연결 살아있음
+          return adopt()
+        } catch { /* 아직 — 다음 폴링 */ }
       }
       setStatus('offline')
       return t.status
