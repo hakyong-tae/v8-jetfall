@@ -15,6 +15,7 @@ import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
 import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
 import { pickAutoTeamFromTeams } from './dropin'
+import { applyPlayerColors } from './player-palette'
 
 export interface HostSessionPlayer { account: string; team: number; nick?: string }
 
@@ -48,8 +49,21 @@ export class HostSession {
       } else if (event === MSG.PING) {
         const p = (_payload as { ping?: number }).ping
         if (typeof p === 'number' && p >= 0) this.pingOf.set(from, Math.min(9999, Math.round(p)))
+      } else if (event === MSG.RESPAWN_SKIP) {
+        this.applyRespawnSkip(from)
       }
     })
+  }
+
+  // 리워드 광고 보상: 사망 대기 스킵. 호스트가 권위 검증 — 실제로 죽어서 대기 중일 때만
+  // respawnCounter를 1로 당긴다(다음 틱에 코어 respawn() 경로가 정상 처리). 치트 불가:
+  // 살아있거나 카운터가 이미 짧으면 무시.
+  applyRespawnSkip(account: string): void {
+    const num = this.slotOf.get(account)
+    if (num === undefined) return
+    const spr = this.gs.sprite[num]
+    if (!spr?.active || !spr.deadMeat) return
+    if (spr.respawnCounter > 1) spr.respawnCounter = 1
   }
 
   // 스코어보드 표시용: sprite num → 릴레이 RTT(ms). 자기 것은 measureOwnPing이, 클라 것은
@@ -138,6 +152,8 @@ export class HostSession {
     const r = randomizeStart(this.gs, p.team)
     const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
     if (num < 0) return false // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
+    // 플레이어 구분 색상 — num 기반 결정적 팔레트(클라 ensureLocalSprite와 같은 함수 = 무동기화 일치).
+    applyPlayerColors(this.gs.sprite[num].player!, num)
     // M5: 맨손 스폰 — createSprite()가 이미 selWeapon=0/secWep=0으로 초기화(원작 규약, Sprites.pas
     // 3574 상당). 무기는 클라의 로드아웃(림보) 메뉴가 LOADOUT 메시지로 골라 지급한다(applyLoadout).
     this.gs.sprite[num].respawn()

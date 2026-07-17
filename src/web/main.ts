@@ -43,6 +43,7 @@ import { GAME_TITLE, GAME_TAGLINE } from './brand'
 import { injectTheme } from './lobby/ui-theme'
 import { loadSettings } from './settings'
 import { t, initLang } from './i18n'
+import { initAds, showInterstitial, showRewarded, makeRoundEndWatcher } from './ads'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
 import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
@@ -281,7 +282,30 @@ function attachEscMenu(
   return { paused: () => o.pausable && overlay !== null, dispose }
 }
 
+// 광고 배치 #3: 리워드 광고로 사망 대기 스킵. 사망 대기 1.5초+ 남았을 때만 노출되는 DOM 버튼
+// (봇전·멀티 공용 — onSkip이 권위 경로를 고른다: 로컬 직접 / 클라→호스트 요청).
+function attachRespawnSkipButton(getWaitTicks: () => number, onSkip: () => void): { update: () => void; dispose: () => void } {
+  const btn = document.createElement('button')
+  btn.className = 'jf-btn jf-btn-primary'
+  btn.style.cssText = 'position:fixed;left:50%;bottom:16%;transform:translateX(-50%);z-index:40;display:none'
+  btn.textContent = `▶ ${t('ad.skipRespawn')}`
+  let pending = false
+  btn.addEventListener('click', () => {
+    if (pending) return
+    pending = true
+    void showRewarded('respawn-skip').then((ok) => { pending = false; if (ok) onSkip() })
+  })
+  document.body.appendChild(btn)
+  return {
+    update: () => { btn.style.display = getWaitTicks() > 90 ? '' : 'none' },
+    dispose: () => btn.remove(),
+  }
+}
+
 async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSeconds?: number): Promise<void> {
+  // 광고 배치 #2: 봇전 시작 전 인터스티셜 — 오프라인이라 대기 인원이 없어 무해.
+  // (멀티 시작 전엔 넣지 않는다 — 다른 플레이어가 기다림.)
+  await showInterstitial('botmatch-start')
   // ── 게임모드 — 메뉴 인자 우선, 없으면 URL ?mode=ctf 호환(개발 경로)
   const params = new URLSearchParams(window.location.search)
   const ctf = mode ? mode === 'ctf' : params.get('mode') === 'ctf'
@@ -369,7 +393,12 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
 
   // ── ESC 오버레이 — 오프라인 봇전은 pausable(시뮬 일시정지). onLeave: 로드아웃 핫키 리스너 해제
   // (안 하면 메뉴로 나갔다 재입장할 때 window keydown 리스너가 중첩된다).
-  const esc = attachEscMenu(app, sound, { pausable: true, onLeave: () => disposeLoadoutHotkeys() })
+  const skipBtn = attachRespawnSkipButton(
+    () => (gs.sprite[me]?.deadMeat ? gs.sprite[me].respawnCounter : 0),
+    () => { const s = gs.sprite[me]; if (s?.deadMeat && s.respawnCounter > 1) s.respawnCounter = 1 },
+  )
+  const roundEndAd = makeRoundEndWatcher(() => void showInterstitial('round-end')) // 광고 배치 #1
+  const esc = attachEscMenu(app, sound, { pausable: true, onLeave: () => { disposeLoadoutHotkeys(); skipBtn.dispose() } })
 
   // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
   let acc = 0
@@ -393,6 +422,8 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
     entities.update(gs)
     hud.update(gs, me, app.screen.width, app.screen.height)
     hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
+    skipBtn.update()
+    roundEndAd(gs.mapChangeCounter)
 
     // 제트팩 루프음 — 로컬 병사가 제트 분사 중일 때만 (Control.pas 클라 전용 루프 배선).
     sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[me])
@@ -565,11 +596,20 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   }
 
   // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈 + 로드아웃 핫키 해제.
+  const skipBtn = attachRespawnSkipButton(
+    () => (myNum >= 0 && gs.sprite[myNum]?.deadMeat ? gs.sprite[myNum].respawnCounter : 0),
+    () => {
+      if (isHost) hostSession?.applyRespawnSkip(account) // 호스트 = 권위 직접 적용
+      else clientSession?.requestRespawnSkip() // 클라 = 호스트 요청(+로컬 예측)
+    },
+  )
+  const roundEndAd = makeRoundEndWatcher(() => void showInterstitial('round-end')) // 광고 배치 #1
   const esc = attachEscMenu(app, sound, {
     pausable: false,
     onLeave: () => {
       window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
       stopPing()
+      skipBtn.dispose()
       disposeLoadoutHotkeys()
       void a.lobby.leave().catch(() => undefined)
       if (dedicatedUrl) void transport.leaveRoom().catch(() => undefined)
@@ -606,6 +646,8 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
       hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum }) // M5+핑: Tab 홀드 동안 스코어보드
+      skipBtn.update()
+      roundEndAd(gs.mapChangeCounter)
       // 스코어보드는 hud.update가 이미 gs.teamScore/kills를 읽어 그린다(스냅샷이 그 값을 덮어씀).
       // C단계 추가: 킬피드는 클라 세션 전용(호스트/오프라인 경로는 스킵 → 봇전 회귀 없음).
       if (clientSession) hud.setKillFeed(gs, clientSession.killFeed)
@@ -691,6 +733,7 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
 function boot(): void {
   // 첫 페인트부터 올바른 언어로 렌더되도록 저장된 설정(없으면 자동감지)으로 언어를 먼저 확정한다.
   initLang(loadSettings().lang)
+  initAds() // Verse8 Ads SDK 초기화 (SDK 부재/비V8 환경은 내부 폴백)
   // 브라우저 탭 타이틀도 브랜드 단일소스에서 — index.html의 정적 title을 덮는다(리뷰 지적: 사용자 노출 표면).
   document.title = `${GAME_TITLE} — ${GAME_TAGLINE}`
   const params = new URLSearchParams(window.location.search)

@@ -7,6 +7,9 @@
   <style>html,body{margin:0;height:100%;background:#000;overflow:hidden}canvas{display:block}</style>
 </head>
 <body>
+  <!-- Verse8 Ads SDK — window.Verse8Ads(showRewarded/showInterstitial) 노출.
+       V8 외 환경에선 호출이 unsupported_env로 떨어지고 src/web/ads.ts가 폴백 처리. -->
+  <script src="https://unpkg.com/@verse8/ads@0.4.0/dist/index.global.js" crossorigin="anonymous"></script>
   <script type="module" src="/src/web/main.ts"></script>
 </body>
 </html>
