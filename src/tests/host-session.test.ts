@@ -70,7 +70,7 @@ describe('HostSession', () => {
     expect(Number.isNaN(gs.spriteParts.pos[num].x)).toBe(false)
   })
 
-  it('broadcasts a decodable SNAPSHOT roughly every 2 ticks (~30Hz of 60Hz)', async () => {
+  it('broadcasts a decodable SNAPSHOT every 3 ticks (50ms — relayHot throttle 정렬 균일 20Hz)', async () => {
     const hub = new LoopbackHub()
     const hostT = hub.createTransport('host')
     const bobT = hub.createTransport('bob')
@@ -84,9 +84,9 @@ describe('HostSession', () => {
     const snaps: ReturnType<typeof decodeSnapshot>[] = []
     bobT.onMessage((event, payload) => { if (event === MSG.SNAPSHOT) snaps.push(decodeSnapshot(payload as ArrayBuffer)) })
 
-    for (let i = 0; i < 10; i++) host.tick()
-    await Promise.resolve() // loopback queueMicrotask 배송 flush — 큐잉된 5개 스냅샷 도착
-    expect(snaps.length).toBe(5) // 10틱 / 2
+    for (let i = 0; i < 12; i++) host.tick()
+    await Promise.resolve() // loopback queueMicrotask 배송 flush — 큐잉된 4개 스냅샷 도착
+    expect(snaps.length).toBe(4) // 12틱 / 3 — 렉 수정: 33ms 송신이 throttle 50ms에 매 3번째 드롭되던 것을 3틱(50ms) 정렬
     expect(snaps[0].sprites.some((s) => s.num === host.spriteNumOf('bob'))).toBe(true)
   })
 

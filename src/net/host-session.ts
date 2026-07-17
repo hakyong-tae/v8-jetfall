@@ -5,7 +5,7 @@
 import type { GameState } from '../core/state'
 import type { Transport } from './types'
 import {
-  MSG, encodeSnapshot, decodeInput, encodeBullet, type InputMsg, type SnapshotSprite,
+  MSG, encodeSnapshot, decodeInput, encodeBullets, type BulletMsg, type InputMsg, type SnapshotSprite,
   type FlagState, type KillMsg, type LoadoutMsg,
 } from './protocol'
 import { createSprite, createTPlayer, HUMAN, MAX_SPRITES, MAX_BULLETS } from '../core/sprites'
@@ -19,8 +19,10 @@ import { applyPlayerColors } from './player-palette'
 
 export interface HostSessionPlayer { account: string; team: number; nick?: string }
 
-// 60Hz 틱 중 2틱마다 브로드캐스트 ⇒ 30Hz (스펙 §4.2 "~20-30Hz" 범위 내).
-const SNAPSHOT_EVERY_N_TICKS = 2
+// 렉 수정: 2틱(33ms)이면 relayHot의 SDK throttle 50ms가 매 3번째 스냅샷을 조용히 드롭해
+// "불균일 20Hz"가 되던 것(33-66-33ms 간격 = 원격이 덜컥거림). 3틱(50ms) = throttle과 정렬된
+// 균일 20Hz — 드롭 0. (스펙 §4.2 "~20-30Hz" 범위 내)
+const SNAPSHOT_EVERY_N_TICKS = 3
 // ASSIGN 재전송 주기(~1s). spawnPlayers는 시작 시 1회만 ASSIGN을 보내므로, 이후 접속/재접속한
 // 클라는 그 1회를 놓쳐 자기 스프라이트 번호를 모른다 — 주기적 재전송으로 늦은 합류/재접속을
 // 자연 치유(클라의 ASSIGN 처리는 멱등이라 무해).
@@ -245,17 +247,21 @@ export class HostSession {
       if (this.gs.bullet[i].active) activeNow.add(i)
     }
     const humanSprites = new Set(this.slotOf.values())
+    // 렉 수정: 탄환당 relay 1회 → 틱당 신규 탄환 전체를 1회로 배치. 샷건 펠릿(동시 다발)·미니건
+    // 연사가 함수 호출 캡("Too many calls")과 릴레이 부하를 때려 전투 중 히치를 만들던 원인.
+    const batch: BulletMsg[] = []
     for (const slot of activeNow) {
       if (this.prevActiveBullets.has(slot)) continue // 기존 탄환 — 이번 틱 신규 아님
       const b = this.gs.bullet[slot]
       if (!humanSprites.has(b.owner)) continue // 봇 등 미추적 소유자는 스코프 밖(열린 질문 참조)
       const vel = this.gs.bulletParts.velocity[slot]
-      this.transport.send(MSG.BULLET, encodeBullet({
+      batch.push({
         seq: this.bulletSeq++, owner: b.owner, weaponNum: b.ownerWeapon, style: b.style,
         hitMultiply: b.hitMultiply, seed: b.seed,
         posX: b.initial.x, posY: b.initial.y, velX: vel.x, velY: vel.y,
-      }))
+      })
     }
+    if (batch.length > 0) this.transport.send(MSG.BULLET, encodeBullets(batch))
     this.prevActiveBullets = activeNow
   }
 

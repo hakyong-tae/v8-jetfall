@@ -645,7 +645,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     entities.update(gs)
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
-      hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum }) // M5+핑: Tab 홀드 동안 스코어보드
+      hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum, roomLabel: a.lobby.roomKey ?? undefined }) // M5+핑+방이름
       skipBtn.update()
       roundEndAd(gs.mapChangeCounter)
       // 스코어보드는 hud.update가 이미 gs.teamScore/kills를 읽어 그린다(스냅샷이 그 값을 덮어씀).

@@ -6,7 +6,7 @@
 import type { GameState } from '../core/state'
 import type { Transport } from './types'
 import {
-  MSG, encodeInput, decodeSnapshot, decodeBullet,
+  MSG, encodeInput, decodeSnapshot, decodeBullets,
   type InputMsg, type SnapshotMsg, type BulletMsg, type KillMsg, type FlagState,
 } from './protocol'
 import { createSprite, createTPlayer, HUMAN, MAX_THINGS } from '../core/sprites'
@@ -19,7 +19,9 @@ import { vector2 } from '../core/vector'
 
 const POS_CORRECTION_THRESHOLD = 8 // px — 스펙 §4.4 예시 임계
 const POS_CORRECTION_ALPHA = 0.25 // 스냅샷마다 잔여오차의 25%씩 당김(지수 스무딩, 안 튐)
-const INPUT_SEND_EVERY_N_TICKS = 2 // 60Hz 중 2틱마다 송신 ⇒ 30Hz
+// 렉 수정: 2틱(33ms)이면 relayHot throttle 50ms가 매 3번째 입력을 드롭해 호스트가 스테일
+// 입력을 불균일하게 재생(원격 시점에서 내 움직임이 덜컥). 3틱(50ms) = throttle 정렬 균일 20Hz.
+const INPUT_SEND_EVERY_N_TICKS = 3
 
 // 로컬 입력 소스가 매 틱 돌려주는 값(웹에서는 InputState.applyTo 결과, 테스트에서는 손으로 준비).
 export type LocalInput = Omit<InputMsg, 'seq'>
@@ -76,7 +78,7 @@ export class ClientSession {
         this.lastSnapshotAt = this.nowFn() // M3-E
         this.applySnapshot(decodeSnapshot(payload as ArrayBuffer))
       } else if (event === MSG.BULLET) {
-        this.spawnRemoteBullet(decodeBullet(payload as ArrayBuffer))
+        for (const b of decodeBullets(payload as ArrayBuffer)) this.spawnRemoteBullet(b) // 배치 수신
       } else if (event === MSG.KILL) {
         this.killFeed.push(payload as KillMsg)
         if (this.killFeed.length > 20) this.killFeed.shift()

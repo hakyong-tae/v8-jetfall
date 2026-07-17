@@ -204,10 +204,11 @@ export class Hud {
     const fmtPing = (p?: number): string => (p === undefined || p < 0 ? '-' : String(p))
     const fmtKd = (k: number, d: number): string => (d === 0 ? (k > 0 ? k.toFixed(1) : '0.0') : (k / d).toFixed(1))
 
-    // 타이틀: 모드 + 목표 (CTF는 팀 스코어). 남은 시간은 상단 HUD가 이미 표시.
-    this.scoreboardTitle.text = isCtf
+    // 타이틀: 모드 + 목표 (CTF는 팀 스코어) + 방 이름(온라인). 남은 시간은 상단 HUD가 이미 표시.
+    const room = opts?.roomLabel ? `   ·   ${t('sb.room')} ${opts.roomLabel}` : ''
+    this.scoreboardTitle.text = (isCtf
       ? `CTF   Alpha ${gs.teamScore[TEAM_ALPHA]} : ${gs.teamScore[TEAM_BRAVO]} Bravo   (${t('sb.goal')} ${gs.svKilllimit})`
-      : `DEATHMATCH   ${t('sb.goal')} ${gs.svKilllimit} ${t('sb.kills')}`
+      : `DEATHMATCH   ${t('sb.goal')} ${gs.svKilllimit} ${t('sb.kills')}`) + room
 
     // 헤더 + 구분선 + 행 (모노스페이스 컬럼 — 핑은 우측 정렬 끝 열)
     const NAME_W = 15
@@ -254,6 +255,7 @@ export function weaponHasIcon(weaponNum: number): boolean {
 export interface ScoreboardOpts {
   pingOf?: (num: number) => number | undefined // 온라인 매치: sprite num → 릴레이 RTT ms
   myNum?: number // 내 스프라이트 번호 — 행 하이라이트
+  roomLabel?: string // 온라인 매치: 현재 방 이름(키) — 타이틀에 표시
 }
 
 export interface ScoreboardRow {

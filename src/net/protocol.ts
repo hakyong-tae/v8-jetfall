@@ -260,6 +260,24 @@ export function decodeBullet(buf: ArrayBuffer): BulletMsg {
   }
 }
 
+// ── 탄환 배치 인코딩(31B 고정 레코드 연접) — 렉 수정: 샷건 펠릿/미니건 연사가 틱당 탄환 수만큼
+// relay를 개별 호출해 함수 호출 캡("Too many calls")과 릴레이 부하를 때리던 것을, 틱당 신규
+// 탄환 전체를 1회 호출로 묶는다. 수신측은 레코드 크기로 분할.
+export function encodeBullets(ms: BulletMsg[]): ArrayBuffer {
+  const buf = new ArrayBuffer(BULLET_BYTES * ms.length)
+  for (let i = 0; i < ms.length; i++) {
+    new Uint8Array(buf).set(new Uint8Array(encodeBullet(ms[i])), i * BULLET_BYTES)
+  }
+  return buf
+}
+export function decodeBullets(buf: ArrayBuffer): BulletMsg[] {
+  const out: BulletMsg[] = []
+  for (let off = 0; off + BULLET_BYTES <= buf.byteLength; off += BULLET_BYTES) {
+    out.push(decodeBullet(buf.slice(off, off + BULLET_BYTES)))
+  }
+  return out
+}
+
 // ── C단계: 킬 이벤트 (저빈도 — JSON 그대로, ASSIGN과 동일 규약) ─────────────
 export interface KillMsg {
   killer: number // 0 = 환경사/자살 (사실 4: who===num이면 코어가 kills를 안 올림)
