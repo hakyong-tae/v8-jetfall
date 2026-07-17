@@ -10,6 +10,8 @@ export interface Agent8Provider {
   }
   configured?: boolean
   timeoutMs?: number
+  connectAttempts?: number // 기본 3 — 릴레이 첫 WS가 끊겼다 붙는 패턴 흡수 (테스트 주입용)
+  retryDelayMs?: number // 기본 1500 — 재시도 간 대기 (테스트 주입용)
 }
 
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
@@ -65,13 +67,25 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       const setStatus = (v: Transport['status']) => { (t as { status: Transport['status'] }).status = v }
       if (!configured) { setStatus('offline'); return t.status }
       setStatus('connecting')
-      try {
-        const s = provider.getInstance()
-        await withTimeout(s.connect(), timeoutMs)
-        server = s
-        ;(t as { account: string }).account = s.account || 'me'
-        setStatus('online')
-      } catch { setStatus('offline') }
+      // 실배포 관찰: 릴레이 첫 WebSocket이 한 번 끊기고 SDK 내부 백오프(1s→2s) 후에 붙는 패턴이
+      // 흔하다("WebSocket is closed before the connection is established" → Reconnection successful).
+      // 1회 시도 후 즉시 offline 단정하면 SDK는 뒤에서 성공하는데 게임은 "서버 미배포"로 오판 —
+      // 짧은 대기를 끼운 3회 재시도로 흡수한다(로비는 그동안 '서버 접속 중…' 토스트 유지).
+      const ATTEMPTS = provider.connectAttempts ?? 3
+      const RETRY_DELAY_MS = provider.retryDelayMs ?? 1500
+      for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+        try {
+          const s = provider.getInstance()
+          await withTimeout(s.connect(), timeoutMs)
+          server = s
+          ;(t as { account: string }).account = s.account || 'me'
+          setStatus('online')
+          return t.status
+        } catch {
+          if (attempt < ATTEMPTS - 1) await new Promise((r) => setTimeout(r, RETRY_DELAY_MS))
+        }
+      }
+      setStatus('offline')
       return t.status
     },
     async listRooms() {

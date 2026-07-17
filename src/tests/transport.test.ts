@@ -37,8 +37,30 @@ describe('makeAgent8Transport', () => {
   })
   it('offline connect times out to offline (does not hang)', async () => {
     const hang = { account: 'x', connect: () => new Promise(() => {}), remoteFunction: async () => null, onRoomMessage: () => {} }
-    const t = makeAgent8Transport({ getInstance: () => hang as any, configured: true, timeoutMs: 50 })
+    const t = makeAgent8Transport({ getInstance: () => hang as any, configured: true, timeoutMs: 50, connectAttempts: 2, retryDelayMs: 10 })
     expect(await t.connect()).toBe('offline')
+  })
+
+  // 실배포 관찰 회귀: 릴레이 첫 WS가 한 번 끊기고 SDK 백오프 후 붙는 패턴 — 1회 실패로
+  // offline 단정하면 안 되고 재시도로 online에 도달해야 한다("서버 미배포" 오판 버그).
+  it('retries connect and goes online when the first attempt fails (flaky relay)', async () => {
+    let calls = 0
+    const flaky = {
+      account: 'srv-acc',
+      connect: vi.fn(async () => { calls++; if (calls === 1) throw new Error('WebSocket closed before established') }),
+      remoteFunction: async () => null,
+      onRoomMessage: () => {},
+    }
+    const t = makeAgent8Transport({ getInstance: () => flaky as any, configured: true, timeoutMs: 100, retryDelayMs: 10 })
+    expect(await t.connect()).toBe('online')
+    expect(calls).toBe(2)
+  })
+
+  it('gives up as offline after exhausting all attempts', async () => {
+    const dead = { account: 'x', connect: vi.fn(async () => { throw new Error('down') }), remoteFunction: async () => null, onRoomMessage: () => {} }
+    const t = makeAgent8Transport({ getInstance: () => dead as any, configured: true, timeoutMs: 100, connectAttempts: 3, retryDelayMs: 10 })
+    expect(await t.connect()).toBe('offline')
+    expect(dead.connect).toHaveBeenCalledTimes(3)
   })
 })
 
