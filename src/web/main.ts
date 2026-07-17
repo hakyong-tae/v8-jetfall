@@ -466,13 +466,40 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     clientSession = new ClientSession(transport, gs, account, () => currentLocalInput)
   }
 
+  // ── M9: 매치 중 로스터 감시 — roomState의 p_ 변화(난입/이탈)를 호스트가 스폰/정리로 반영.
+  // 핸드오프 시 room 화면 cleanup이 onChange를 초기화하므로 여기서 다시 구독해도 충돌 없음.
+  // 저빈도 이벤트지만 rAF 루프에서 dirty 플래그로 소비 — 마이그레이션 승격 직후의 신임 호스트도
+  // 같은 경로로 로스터를 이어받는다(isHost/hostSession은 루프 시점 최신값).
+  // 초기값 true — onChange 등록 전(에셋/씬 로딩 await 구간)에 난입한 p_도 첫 루프 틱에 1회
+  // 조정으로 흡수한다(syncRoster는 멱등 — 기존 인원은 no-op).
+  let rosterDirty = true
+  if (!isDedicated) a.lobby.onChange(() => { rosterDirty = true })
+  function syncRosterIfHost(): void {
+    if (!rosterDirty || !isHost || !hostSession) return
+    rosterDirty = false
+    hostSession.syncRoster(Object.entries(a.lobby.players)
+      .map(([acc, p]) => ({ account: acc, team: p.team })))
+    if (myNum < 0) myNum = hostSession.spriteNumOf(account) ?? -1
+  }
+
+  // ── M9: 방 목록 하트비트 — room 화면의 touchRoom 타이머는 핸드오프에서 해제되므로, 매치 중에도
+  // 방장이 5초마다 soldat_rooms를 upsert해 목록에 "진행중 · 난입 가능"으로 계속 노출한다.
+  // started=true는 start()가 이미 roomState에 기록 — touchRoom이 그대로 반영. 해제는 ESC LEAVE +
+  // 오프라인 폴백(degrade) 양쪽에서.
+  const touchTimer = window.setInterval(() => {
+    if (!isHost || isDedicated) return
+    void a.lobby.touchRoom().catch((e) => console.warn('[net] touchRoom failed (방 목록 미표시 가능):', e))
+  }, 5000)
+
   // ── M3-E: 마이그레이션 감시 + 재접속 감시 + 오프라인 폴백(매 프레임 저비용 값 비교) ──
   let reconnecting = false
   let degraded = false
+  const matchStartedAt = Date.now() // M9(리뷰 #3): 유령 방 난입 시 무스냅샷 타임아웃 기준점
   function degradeToOfflineBots(reason: string): void {
     if (degraded) return
     degraded = true
     console.warn(`[net] falling back to offline bots: ${reason}`)
+    window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
     esc.dispose() // 이전 매치의 ESC 리스너 제거 (새 봇전이 자기 것을 단다)
     app.ticker.stop(); app.destroy(true); document.body.innerHTML = ''
     startBotMatch().catch(fail)
@@ -497,6 +524,13 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
       return
     }
     if (!clientSession) return
+    // M9(리뷰 #3): 유령 started 방 난입 가드 — 목록엔 남았지만 호스트가 없는 방에 들어가면
+    // 첫 스냅샷이 영영 안 온다(decideMigration은 lastSnapshotAt===0이면 판단 보류). 매치 진입
+    // 후 8초 내 무수신이면 봇전 폴백.
+    if (clientSession.lastSnapshotAt === 0 && Date.now() - matchStartedAt > 8000) {
+      degradeToOfflineBots('no snapshot from host (dead room?)')
+      return
+    }
     const action = decideMigration(clientSession.lastSnapshotAt, {
       getPlayers: () => a.lobby.players, myAccount: account,
       currentHostAccount: a.lobby.roomState.hostAccount, nowFn: () => Date.now(),
@@ -511,12 +545,21 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   }
 
   // §설계결정5 수동우회용 디버그 훅(전용호스트 Plan-B의 dedicatedHostUrl 수동기록 등).
-  ;(window as unknown as Record<string, unknown>).__soldatNet = { lobby: a.lobby, gs, net: transport }
+  // M9: 라이브 클로저 상태 게터(hostSession/rosterDirty 등) — loopback 단일페이지 seam에서
+  // 난입 스폰을 콘솔로 관찰·검증하기 위한 읽기전용 디버그 핸들.
+  // app 노출 — 봇전의 __soldat.step()과 같은 이유(rAF 스로틀 프리뷰에서 ticker.update() 수동 펌프).
+  ;(window as unknown as Record<string, unknown>).__soldatNet = {
+    lobby: a.lobby, gs, net: transport, app,
+    get hostSession() { return hostSession },
+    get isHost() { return isHost },
+    get myNum() { return myNum },
+  }
 
   // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈 + 로드아웃 핫키 해제.
   const esc = attachEscMenu(app, sound, {
     pausable: false,
     onLeave: () => {
+      window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
       disposeLoadoutHotkeys()
       void a.lobby.leave().catch(() => undefined)
       if (dedicatedUrl) void transport.leaveRoom().catch(() => undefined)
@@ -527,6 +570,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   let acc = 0
   app.ticker.add((ticker) => {
     checkMigrationAndReconnect() // ← M3-E 신규 감시 훅, 루프 나머지는 기존 그대로
+    syncRosterIfHost() // ← M9: roomState 변경 시(dirty) 난입 스폰/이탈 정리
     if (myNum >= 0) { loadout.poll(); input.setMenuOpen(loadout.isOpen()) } // M5: 자동오픈+발사억제
     acc += ticker.deltaMS
     let ticks = 0

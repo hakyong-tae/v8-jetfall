@@ -23,9 +23,9 @@ export class Server {
   }
 
   async joinRoom(key: string | null, mode?: number): Promise<{ roomId: string }> {
+    const rooms = await $global.getCollectionItems("soldat_rooms", { limit: 100 }).catch(() => []);
     let target: string = key as string;
     if (!target) {
-      const rooms = await $global.getCollectionItems("soldat_rooms", { limit: 100 }).catch(() => []);
       for (const r of rooms) {
         if ((r.count || 0) < CAP && !r.started) {
           target = r.key;
@@ -41,14 +41,16 @@ export class Server {
     }
     await $global.joinRoom(target);
     // mode는 클라가 넘긴 값 우선 — 등록 시점엔 roomState가 아직 비어 mode가 항상 0(DM)으로
-    // 잘못 표기되던 버그 수정. 컬렉션 쓰기 실패는 삼키되(입장 자체는 성공시켜야 함), 방장측
-    // touchRoom 하트비트가 재등록으로 자가치유한다.
+    // 잘못 표기되던 버그 수정. started는 기존 목록 값 보존 — 진행중 방에 난입(M9)해도 목록이
+    // '시작 전'으로 되돌아가지 않게(리뷰 #4). 컬렉션 쓰기 실패는 삼키되(입장 자체는 성공시켜야
+    // 함), 방장측 touchRoom 하트비트가 재등록으로 자가치유한다.
+    const existing = rooms.find((r: any) => r.key === target);
     await $global
       .updateCollectionItem("soldat_rooms", target, {
         key: target,
         count: await this._count(),
-        mode: mode ?? (await $room.getRoomState()).mode ?? 0,
-        started: false,
+        mode: mode ?? existing?.mode ?? (await $room.getRoomState()).mode ?? 0,
+        started: !!existing?.started,
       })
       .catch(() => {});
     return { roomId: target };

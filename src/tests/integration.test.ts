@@ -114,7 +114,8 @@ function botNames(n: number): string[] {
 }
 
 describe('integration — headless bot DM/CTF (M2 완료 기준)', () => {
-  it('DM: 봇 4 (팀 없음), 3600틱(1분) 헤드리스 — 무예외·무NaN·탄환/킬 누적, 리스폰 순환', () => {
+  // CPU 포화 병렬 실행에서 기본 5s를 넘겨 간헐 플레이크 — 소크 2건에 20s 여유(로직 무변경).
+  it('DM: 봇 4 (팀 없음), 3600틱(1분) 헤드리스 — 무예외·무NaN·탄환/킬 누적, 리스폰 순환', { timeout: 20000 }, () => {
     seedRandom(12)
     const gs = freshGame()
     gs.svGamemode = GAMESTYLE_DEATHMATCH
@@ -221,7 +222,7 @@ describe('integration — headless bot DM/CTF (M2 완료 기준)', () => {
     expect(gs.sprite[num].weapon).not.toBe(guns[NOWEAPON])
   })
 
-  it('CTF: 알파1+브라보1 봇, 7200틱 — 깃발 2개 활성 유지(무결성 가드), 무예외·무NaN', () => {
+  it('CTF: 알파1+브라보1 봇, 7200틱 — 깃발 2개 활성 유지(무결성 가드), 무예외·무NaN', { timeout: 20000 }, () => {
     seedRandom(20260712)
     const gs = freshGame()
     gs.svGamemode = GAMESTYLE_CTF
