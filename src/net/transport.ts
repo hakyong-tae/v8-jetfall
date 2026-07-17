@@ -84,6 +84,8 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       const ATTEMPTS = provider.connectAttempts ?? 3
       const RETRY_DELAY_MS = provider.retryDelayMs ?? 1500
       const s = provider.getInstance()
+      // dev 전용 진단 핸들 — 브라우저 콘솔에서 remoteFunction을 직접 때려볼 수 있게.
+      if (import.meta.env.DEV && typeof window !== 'undefined') (window as unknown as { __a8?: object }).__a8 = { server: s, store: provider.store, transport: t }
       const adopt = (): Transport['status'] => {
         server = s
         ;(t as { account: string }).account = s.account || 'me'

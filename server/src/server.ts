@@ -1,4 +1,7 @@
 const CAP = 8;
+// 방 하트비트(클라 5초)의 4배 — 이 시간 안에 touchRoom이 없으면 죽은 방으로 간주하고 목록에서
+// 숨김+삭제. (호스트 크래시/탭닫힘으로 leaveRoom이 안 불린 방의 유령 등록 청소)
+const STALE_MS = 20000;
 
 interface RoomListingItem {
   key: string;
@@ -12,9 +15,36 @@ export class Server {
     return Date.now();
   }
 
+  // 컬렉션 아이템은 자동 __id로 식별된다(docs/gameserver/sdk/globalCollection):
+  //   addCollectionItem(collectionId, item) → 생성(__id 부여)
+  //   updateCollectionItem(collectionId, item) → item.__id로 기존 아이템 갱신 (2인자!)
+  // 이전 코드는 updateCollectionItem(collectionId, key, data) 3인자로 잘못 호출해 "성공처럼
+  // 조용히 아무것도 안 쓰는" 버그 — 방 목록이 영원히 빈 배열이던 근본원인. 우리 방 식별자는
+  // key 필드이므로, key로 찾아 있으면 update(__id 유지), 없으면 add 하는 업서트로 감싼다.
+  async _upsertRoom(key: string, data: Record<string, unknown>): Promise<void> {
+    const rooms = await $global.getCollectionItems("soldat_rooms", { limit: 100 }).catch(() => []);
+    const existing = rooms.find((r: any) => r.key === key);
+    const item = { ...(existing || {}), key, ...data, at: Date.now() };
+    if (existing && existing.__id) await $global.updateCollectionItem("soldat_rooms", item);
+    else await $global.addCollectionItem("soldat_rooms", item);
+  }
+
   async listRooms(): Promise<RoomListingItem[]> {
     const rooms = await $global.getCollectionItems("soldat_rooms", { limit: 100 }).catch(() => []);
-    return rooms.map((r: any) => ({
+    const cutoff = Date.now() - STALE_MS;
+    const fresh: any[] = [];
+    for (const r of rooms) {
+      if ((r.at || 0) >= cutoff) fresh.push(r);
+      // 유령 방 청소는 best-effort — 실패해도 목록 응답엔 지장 없음.
+      else if (r.__id) $global.deleteCollectionItem("soldat_rooms", r.__id).catch(() => {});
+    }
+    // 같은 key로 중복 등록됐으면(동시 업서트 레이스) 최신 것만 노출.
+    const byKey = new Map<string, any>();
+    for (const r of fresh) {
+      const prev = byKey.get(r.key);
+      if (!prev || (r.at || 0) > (prev.at || 0)) byKey.set(r.key, r);
+    }
+    return [...byKey.values()].map((r: any) => ({
       key: r.key,
       count: r.count || 0,
       mode: r.mode || 0,
@@ -24,9 +54,11 @@ export class Server {
 
   async joinRoom(key: string | null, mode?: number): Promise<{ roomId: string }> {
     const rooms = await $global.getCollectionItems("soldat_rooms", { limit: 100 }).catch(() => []);
+    const cutoff = Date.now() - STALE_MS;
+    const live = rooms.filter((r: any) => (r.at || 0) >= cutoff);
     let target: string = key as string;
     if (!target) {
-      for (const r of rooms) {
+      for (const r of live) {
         if ((r.count || 0) < CAP && !r.started) {
           target = r.key;
           break;
@@ -45,14 +77,11 @@ export class Server {
     // '시작 전'으로 되돌아가지 않게(리뷰 #4). 컬렉션 쓰기 실패는 삼키되(입장 자체는 성공시켜야
     // 함), 방장측 touchRoom 하트비트가 재등록으로 자가치유한다.
     const existing = rooms.find((r: any) => r.key === target);
-    await $global
-      .updateCollectionItem("soldat_rooms", target, {
-        key: target,
-        count: await this._count(),
-        mode: mode ?? existing?.mode ?? (await $room.getRoomState()).mode ?? 0,
-        started: !!existing?.started,
-      })
-      .catch(() => {});
+    await this._upsertRoom(target, {
+      count: await this._count(),
+      mode: mode ?? existing?.mode ?? (await $room.getRoomState()).mode ?? 0,
+      started: !!existing?.started,
+    }).catch(() => {});
     return { roomId: target };
   }
 
@@ -64,8 +93,7 @@ export class Server {
   // 방 목록 upsert 하트비트(방장이 주기 호출) — joinRoom의 컬렉션 쓰기가 실패했어도 재등록으로
   // 자가치유 + 인원수/모드/진행상태 최신화. 실패를 삼키지 않는다(클라가 콘솔 경고로 가시화).
   async touchRoom(key: string, mode: number, started: boolean): Promise<void> {
-    await $global.updateCollectionItem("soldat_rooms", key, {
-      key,
+    await this._upsertRoom(key, {
       count: await this._count(),
       mode: mode ?? 0,
       started: !!started,
