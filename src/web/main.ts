@@ -541,7 +541,10 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     myNum = promoted.spriteNumOf(account) ?? clientSession.myNum ?? -1
     myEpoch = (a.lobby.roomState.hostEpoch ?? 0) + 1
     hostSession = promoted; clientSession = null; isHost = true
-    void transport.updateRoomState({ hostAccount: account, hostEpoch: myEpoch })
+    // updateRoomState는 이제 재시도 소진 시 던진다 — 승격 클레임 실패는 다음 감시 주기가 재승격
+    // 판단으로 자연 복구하므로 경고만 남긴다(unhandled rejection 방지).
+    transport.updateRoomState({ hostAccount: account, hostEpoch: myEpoch })
+      .catch((e) => console.warn('[net] host claim write failed:', e))
   }
 
   // §설계결정5 수동우회용 디버그 훅(전용호스트 Plan-B의 dedicatedHostUrl 수동기록 등).
