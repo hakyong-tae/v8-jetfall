@@ -94,6 +94,58 @@ describe('makeAgent8Transport', () => {
     expect(flaky.connect).toHaveBeenCalledTimes(1) // ← 재-connect로 SDK와 싸우지 않음
   })
 
+  // ── SDK 스토어 위임 경로 (라이브 플랩 근본수정) — 스토어가 connect 수명주기를 소유하고,
+  // 우리는 connected 플래그만 관찰한다. raw connect()는 절대 직접 부르지 않는다(부르면 스토어
+  // focus 핸들러와 경합해 소켓을 찢음).
+  function mockStore(initialConnected = false) {
+    let state = { connected: initialConnected, account: 'store-acc' }
+    const subs: Array<(s: { connected: boolean }) => void> = []
+    return {
+      getState: () => ({
+        ...state,
+        connect: vi.fn(async () => { state = { ...state, connected: true }; subs.forEach((f) => f({ connected: true })) }),
+      }),
+      subscribe: (fn: (s: { connected: boolean }) => void) => { subs.push(fn); return () => {} },
+      _drop() { state = { ...state, connected: false }; subs.forEach((f) => f({ connected: false })) },
+      _restore() { state = { ...state, connected: true }; subs.forEach((f) => f({ connected: true })) },
+    }
+  }
+
+  it('store path: delegates connect to the SDK store, never calls raw connect()', async () => {
+    const s = mockServer()
+    const store = mockStore()
+    const t = makeAgent8Transport({ getInstance: () => s as any, store: store as any, configured: true, timeoutMs: 200, retryDelayMs: 10 })
+    expect(await t.connect()).toBe('online')
+    expect(t.account).toBe('store-acc')
+    expect(s.connect).not.toHaveBeenCalled() // ← 핵심: raw connect 미호출(스토어 소유)
+  })
+
+  it('store path: mirrors drops as connecting (not offline) and recovers to online', async () => {
+    const s = mockServer()
+    const store = mockStore()
+    const t = makeAgent8Transport({ getInstance: () => s as any, store: store as any, configured: true, timeoutMs: 200, retryDelayMs: 10 })
+    await t.connect()
+    store._drop() // 스토어가 재접속 중 — 우리는 재-connect 안 하고 상태만 미러링
+    expect(t.status).toBe('connecting')
+    store._restore()
+    expect(t.status).toBe('online')
+    expect(s.connect).not.toHaveBeenCalled()
+  })
+
+  it('store path: goes offline when the store never connects within budget', async () => {
+    const s = mockServer()
+    const store = mockStore()
+    // connect가 connected를 안 올리는 스토어(백엔드 다운 모사)
+    const dead = {
+      getState: () => ({ connected: false, account: '', connect: vi.fn(async () => {}) }),
+      subscribe: () => () => {},
+    }
+    void s // (미사용 경고 방지)
+    const t = makeAgent8Transport({ getInstance: () => mockServer() as any, store: dead as any, configured: true, timeoutMs: 100, connectAttempts: 1, retryDelayMs: 50 })
+    expect(await t.connect()).toBe('offline')
+    void store
+  })
+
   it('gives up as offline after connect fails and all polls fail', async () => {
     const dead = {
       account: 'x',

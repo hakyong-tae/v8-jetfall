@@ -8,6 +8,20 @@ export interface Agent8Provider {
     remoteFunction: (name: string, args: unknown[], opts?: object) => Promise<unknown>
     onRoomMessage: (roomId: string, event: string, cb: (m: unknown) => void) => void
   }
+  // SDK의 zustand 스토어(딥임포트) — 있으면 접속 수명주기를 전적으로 스토어에 위임한다.
+  // 이유(라이브 플랩 근본원인): 스토어는 모듈 로드만으로 window focus/visibility 리스너를 전역
+  // 등록하고, 자기 connected 플래그가 false면 focus마다 server.connect()를 강제 재호출해
+  // "남이 직접 연결한" 건강한 소켓을 찢는다. 우리가 GameServer를 직접 connect하면 스토어
+  // 플래그가 영원히 false → 창 전환마다 재접속 폭풍. 스토어를 통해 접속하면 connected=true가
+  // 유지돼 focus 핸들러가 무동작이 되고, 끊김 복구도 스토어의 관리형 백오프가 담당한다.
+  store?: {
+    getState: () => {
+      connected: boolean
+      account: string
+      connect: (config?: object) => Promise<void>
+    }
+    subscribe: (fn: (s: { connected: boolean }) => void) => () => void
+  }
   configured?: boolean
   timeoutMs?: number
   connectAttempts?: number // 기본 3 — 릴레이 첫 WS가 끊겼다 붙는 패턴 흡수 (테스트 주입용)
@@ -67,12 +81,6 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       const setStatus = (v: Transport['status']) => { (t as { status: Transport['status'] }).status = v }
       if (!configured) { setStatus('offline'); return t.status }
       setStatus('connecting')
-      // 실배포 관찰 2제: ①릴레이 첫 WS가 끊기고 SDK 내부 백오프 후 붙는 패턴 → 1회 실패로
-      // offline 단정 금지. ②connect()를 "다시" 부르면 SDK가 붙는 중/붙은 소켓을 찢고 재시작해
-      // SDK 자체 재접속과 싸우는 플랩 증폭(라이브 콘솔: Connected 직후 connect false→closed
-      // before established 순환). 그래서 connect()는 딱 1회만 부르고, 타임아웃이면 재-connect
-      // 대신 가벼운 remoteFunction(listRooms) 폴링으로 "이미 붙었는지"를 확인한다 — SDK의
-      // 자체 재접속을 방해하지 않고 성공 시점만 감지.
       const ATTEMPTS = provider.connectAttempts ?? 3
       const RETRY_DELAY_MS = provider.retryDelayMs ?? 1500
       const s = provider.getInstance()
@@ -82,6 +90,38 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
         setStatus('online')
         return t.status
       }
+      // ── 정식 경로: SDK 스토어에 접속 수명주기 위임 (Agent8Provider.store 주석 참조 — 플랩
+      // 근본원인 봉합). 스토어 connect는 완료를 promise로 알리지 않고 connected 플래그로
+      // 알리므로 폴링으로 성공을 감지한다. 이후 끊김/복구는 스토어 구독으로 상태만 반영
+      // (재접속은 스토어의 관리형 백오프 + focus 핸들러가 담당 — 우리는 connect를 다시 부르지 않는다).
+      if (provider.store) {
+        const st = provider.store
+        if (!st.getState().connected) {
+          void st.getState().connect().catch(() => { /* 실패는 connected 폴링으로 판정 */ })
+          const budgetMs = timeoutMs + ATTEMPTS * RETRY_DELAY_MS
+          const deadline = Date.now() + budgetMs
+          while (Date.now() < deadline && !st.getState().connected) {
+            await new Promise((r) => setTimeout(r, 200))
+          }
+        }
+        if (st.getState().connected) {
+          st.subscribe(({ connected: c }) => {
+            // 세션 중 상태 미러링 — 스토어가 재접속 중이면 'connecting'(offline 아님: 폴백 방지),
+            // 복구되면 'online'. connect 재호출 금지(스토어가 함).
+            if (t.status === 'offline') return // 우리가 명시적으로 포기한 뒤에는 미러링 중단
+            setStatus(c ? 'online' : 'connecting')
+          })
+          const acc = st.getState().account
+          server = s
+          ;(t as { account: string }).account = acc || s.account || 'me'
+          setStatus('online')
+          return t.status
+        }
+        setStatus('offline')
+        return t.status
+      }
+      // ── 폴백 경로(스토어 미주입 — 테스트/딥임포트 실패): connect 1회 + remoteFunction 폴링.
+      // connect()를 재호출하면 SDK가 붙는 중 소켓을 찢어 자체 재접속과 싸우므로 절대 재호출 금지.
       try {
         await withTimeout(s.connect(), timeoutMs)
         return adopt()
@@ -174,8 +214,21 @@ export async function realProvider(): Promise<Agent8Provider> {
   // @agent8/gameserver는 이제 정식 의존성(package.json) — vite가 번들에 포함한다. 동적 import는
   // VITE_AGENT8_VERSE가 세팅됐을 때만 실행되므로(위 게이트) 오프라인 빌드에선 로드 코드가 안 돈다.
   const { GameServer } = (await import('@agent8/gameserver')) as { GameServer: { getInstance: () => unknown } }
+  // SDK 스토어 딥임포트 — index가 재수출하지 않아 내부 경로로 가져온다(패키지에 exports 맵 없음
+  // = 서브패스 허용). 실패 시 스토어 없이 폴백 경로(connect 1회+폴링)로 동작(연결은 되지만
+  // focus 재접속 폭풍 리스크가 남으므로 콘솔 경고로 가시화).
+  let store: Agent8Provider['store']
+  try {
+    const mod = (await import('@agent8/gameserver/dist/src/store/useGameServerStore')) as {
+      useGameServerStore: NonNullable<Agent8Provider['store']>
+    }
+    store = mod.useGameServerStore
+  } catch (e) {
+    console.warn('[net] SDK store deep-import failed — falling back to raw connect (focus-reconnect risk):', e)
+  }
   return {
     getInstance: () => GameServer.getInstance() as unknown as ReturnType<Agent8Provider['getInstance']>,
+    store,
     configured: true,
   }
 }
