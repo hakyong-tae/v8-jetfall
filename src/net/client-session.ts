@@ -127,9 +127,25 @@ export class ClientSession {
     t.skeleton.pos[1].y = f.posY
   }
 
+  // ── M9: 이탈자 정리 — 스냅샷은 호스트 slotOf의 활성 스프라이트 전체를 담으므로(full-state),
+  // 로컬이 알던 num이 스냅샷에서 빠졌다 = 호스트가 kill()로 퇴장 처리했다. 코어 규약과 동일하게
+  // sprite.kill()로 비활성화하고 knownSlots(승격 seed)에서도 제거 — 안 지우면 호스트 마이그레이션
+  // 승격 시 이탈자를 부활시킨다. 자기 자신(myNum)은 방어적으로 보존(배송 레이스 대비).
+  private pruneDeparted(msg: SnapshotMsg): void {
+    const inSnapshot = new Set(msg.sprites.map((s) => s.num))
+    for (const num of [...this.known]) {
+      if (inSnapshot.has(num) || num === this.myNum) continue
+      if (this.gs.sprite[num]?.active) this.gs.sprite[num].kill()
+      this.known.delete(num)
+      this.prevDeadMeat.delete(num)
+      for (const [account, n] of [...this.knownSlots]) if (n === num) this.knownSlots.delete(account)
+    }
+  }
+
   private applySnapshot(msg: SnapshotMsg): void {
     this.gs.teamScore[1] = msg.teamScore1 // 설계 결정 3: 스코어 진실은 항상 스냅샷이 덮어씀
     this.gs.teamScore[2] = msg.teamScore2
+    this.pruneDeparted(msg) // M9: 이탈자 로컬 정리
 
     for (const s of msg.sprites) {
       this.ensureLocalSprite(s.num, s.team, { x: s.posX, y: s.posY })

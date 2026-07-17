@@ -13,6 +13,8 @@ import {
 // createWeaponsBase()는 로비 컨텍스트(매치 시작 전, loadGameAssets 미경유)에서 무기명을 채운다.
 import { guns, createWeaponsBase, EAGLE, PRIMARY_WEAPONS, MAIN_WEAPONS } from '../../core/weapons'
 import { mergeRoomSettings, canDisableWeapon } from '../../net/room-settings'
+// M9: 난입(drop-in) 순수 헬퍼 — 정원 게이트 + CTF 자동 팀배정(테스트 공유용 별도 모듈).
+import { canJoinRoom, pickAutoTeam } from '../../net/dropin'
 import { GAME_TITLE, GAME_VERSION, CREDITS_LINES } from '../brand'
 import { loadSettings, saveSettings, type GameSettings } from '../settings'
 import { loadManifest } from '../assets'
@@ -69,8 +71,14 @@ function saveLastRespawn(v: number): void {
 }
 
 // loopback=true면 배포 없이 단일 브라우저에서 목 릴레이 사용 (개발/데모).
+// M9: 허브를 __soldatHub로 노출 — 단일 페이지 seam에서 진행중 방 목록/난입 동선을 콘솔로
+// 연출·검증하기 위한 개발 핸들(__soldat/__soldatNet과 동일 규약, loopback 한정).
 export async function makeTransport(loopback: boolean): Promise<Transport> {
-  if (loopback) return new LoopbackHub().createTransport('me-' + Math.floor(performance.now()))
+  if (loopback) {
+    const hub = new LoopbackHub()
+    ;(window as unknown as Record<string, unknown>).__soldatHub = hub
+    return hub.createTransport('me-' + Math.floor(performance.now()))
+  }
   return makeAgent8Transport(await realProvider())
 }
 
@@ -432,15 +440,21 @@ function renderLobby(ctx: Ctx, scr: HTMLElement): void {
   let rooms: { key: string; count: number; mode: number; started: boolean }[] = []
   const drawRooms = (): void => {
     if (rooms.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="jf-muted">열린 방 없음 — 방을 만들어 보세요</td></tr>'
+      tbody.innerHTML = `<tr><td colspan="4" class="jf-muted">${t('lobby.noRooms')}</td></tr>`
       return
+    }
+    // M9: 진행중 방도 Join 가능(난입) — 정원 초과 시에만 비활성. started는 라벨로만 구분.
+    const joinCell = (r: { key: string; count: number; started: boolean }): string => {
+      if (!canJoinRoom(r.count)) return `<span class="jf-muted">${t('lobby.full')}</span>`
+      const label = r.started ? t('lobby.joinInProgress') : 'Join'
+      return `<button class="jf-btn" data-join="${r.key}">${label}</button>`
     }
     tbody.innerHTML = rooms.map((r, i) => `
       <tr class="jf-click" data-i="${i}">
         <td>${r.key}</td>
         <td>${r.mode === GAMESTYLE_CTF ? 'CTF' : 'DM'}</td>
-        <td>${r.count}</td>
-        <td>${r.started ? '<span class="jf-muted">진행중</span>' : '<button class="jf-btn" data-join="' + r.key + '">Join</button>'}</td>
+        <td>${r.count}${r.started ? ` <span class="jf-muted">· ${t('lobby.inProgress')}</span>` : ''}</td>
+        <td>${joinCell(r)}</td>
       </tr>`).join('')
     tbody.querySelectorAll('[data-join]').forEach((b) =>
       b.addEventListener('click', () => void enterRoom(ctx, (b as HTMLElement).dataset.join!)))
@@ -454,7 +468,7 @@ function renderLobby(ctx: Ctx, scr: HTMLElement): void {
   ctx.cleanup.push(() => window.clearInterval(timer))
 
   panel.querySelector('#jf-quick')!.addEventListener('click', () => {
-    const open = rooms.find((r) => !r.started)
+    const open = rooms.find((r) => !r.started && canJoinRoom(r.count)) // M9: 정원 게이트 추가
     void enterRoom(ctx, open ? open.key : 'dm-' + Date.now(), open ? undefined : GAMESTYLE_DEATHMATCH)
   })
   panel.querySelector('#jf-create-dm')!.addEventListener('click', () =>
@@ -466,12 +480,27 @@ function renderLobby(ctx: Ctx, scr: HTMLElement): void {
 }
 
 // createMode가 주어지면 새 방 생성, 아니면 기존 방 참가 → room 화면.
+// M9: 이미 시작된(started) 방에 참가하면 room 화면을 건너뛰고 곧장 매치로 난입한다 —
+// CTF면 인원 적은 팀을 자동배정해 p_에 먼저 기록(호스트 syncRoster가 이 team으로 스폰).
 async function enterRoom(ctx: Ctx, key: string, createMode?: number): Promise<void> {
   const lc = ctx.lc
   if (!lc) return
   try {
     if (createMode !== undefined) await lc.createRoom(key, createMode)
-    else await lc.joinRoom(key)
+    else {
+      await lc.joinRoom(key)
+      if (lc.roomState.started === true) {
+        const mode = lc.roomState.mode
+        let myTeam = TEAM_NONE
+        if (mode === GAMESTYLE_CTF) {
+          myTeam = pickAutoTeam(lc.players)
+          await lc.selectTeam(myTeam) // 핸드오프 전에 기록 — 호스트가 이 team으로 스폰
+        }
+        handoff(ctx)
+        ctx.opts.onStartMatch({ lobby: lc, mode, myTeam })
+        return
+      }
+    }
     show(ctx, 'room')
   } catch {
     showToast('방 입장 실패 — 다시 시도하세요')

@@ -87,27 +87,56 @@ export class HostSession {
   // 중 하나를 고르므로 호출 순서가 배정 순서). addBotPlayer 패턴(randomizeStart→createSprite→
   // 무기지급→respawn) 재사용, controlMethod만 BOT 대신 HUMAN.
   spawnPlayers(players: HostSessionPlayer[]): void {
-    for (const p of players) {
-      const tPlayer = createTPlayer()
-      tPlayer.team = p.team
-      tPlayer.controlMethod = HUMAN
-      // 이름이 비면 코어 respawn()이 조기 반환(sprites.ts:3506 `{$IFNDEF SERVER}` 가드)해
-      //   사망 후 영구히 리스폰 못 함 — 계정명을 부여해 리스폰 경로를 활성화.
-      tPlayer.name = p.account
-      const r = randomizeStart(this.gs, p.team)
-      const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
-      if (num < 0) continue // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
-      // M5: 맨손 스폰 — createSprite()가 이미 selWeapon=0/secWep=0으로 초기화(원작 규약, Sprites.pas
-      // 3574 상당). 무기는 클라의 로드아웃(림보) 메뉴가 LOADOUT 메시지로 골라 지급한다(applyLoadout).
-      this.gs.sprite[num].respawn()
-      this.slotOf.set(p.account, num)
-      // C단계: 킬/사망 diff 기준선을 스폰 시점에 시딩 — 첫 틱 이전(스크립트 데미지 등)에
-      //   발생한 변화도 첫 tick()의 diff가 올바르게 잡도록 한다(lazy-init 사각지대 제거).
-      this.prevKills.set(num, this.gs.sprite[num].player!.kills)
-      this.prevDeadMeat.set(num, this.gs.sprite[num].deadMeat)
-      this.transport.send(MSG.ASSIGN, { account: p.account, num })
-    }
+    for (const p of players) this.spawnOne(p)
     this.gs.sortPlayers?.()
+  }
+
+  // 플레이어 1명 스폰 + ASSIGN 통지 — spawnPlayers(시작)와 syncRoster(M9 난입)가 공유.
+  private spawnOne(p: HostSessionPlayer): boolean {
+    const tPlayer = createTPlayer()
+    tPlayer.team = p.team
+    tPlayer.controlMethod = HUMAN
+    // 이름이 비면 코어 respawn()이 조기 반환(sprites.ts:3506 `{$IFNDEF SERVER}` 가드)해
+    //   사망 후 영구히 리스폰 못 함 — 계정명을 부여해 리스폰 경로를 활성화.
+    tPlayer.name = p.account
+    const r = randomizeStart(this.gs, p.team)
+    const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
+    if (num < 0) return false // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
+    // M5: 맨손 스폰 — createSprite()가 이미 selWeapon=0/secWep=0으로 초기화(원작 규약, Sprites.pas
+    // 3574 상당). 무기는 클라의 로드아웃(림보) 메뉴가 LOADOUT 메시지로 골라 지급한다(applyLoadout).
+    this.gs.sprite[num].respawn()
+    this.slotOf.set(p.account, num)
+    // C단계: 킬/사망 diff 기준선을 스폰 시점에 시딩 — 첫 틱 이전(스크립트 데미지 등)에
+    //   발생한 변화도 첫 tick()의 diff가 올바르게 잡도록 한다(lazy-init 사각지대 제거).
+    this.prevKills.set(num, this.gs.sprite[num].player!.kills)
+    this.prevDeadMeat.set(num, this.gs.sprite[num].deadMeat)
+    this.transport.send(MSG.ASSIGN, { account: p.account, num })
+    return true
+  }
+
+  // ── M9: 매치 중 로스터 동기화(난입/이탈) — roomState의 p_ 목록과 slotOf를 맞춘다.
+  // 난입: spawnPlayers와 동일 경로(spawnOne)로 스폰 + 즉시 ASSIGN(60틱 재방송이 레이스 보강).
+  //   늦합류 클라의 상태 캐치업은 별도 전송 불요 — 스냅샷이 매 2틱 전체 상태라 수신 즉시 따라잡음.
+  // 이탈: 코어 규약대로 sprite.kill()(Sprites.pas TSprite.Kill 상당 — 퇴장/재생성용 비활성화,
+  //   운반 깃발 해제 포함)로 비활성화하고 호스트 측 추적 맵에서 제거. 이후 스냅샷에서 빠지므로
+  //   클라는 applySnapshot의 부재 감지(client-session.ts M9)로 로컬 스프라이트를 정리한다.
+  syncRoster(players: HostSessionPlayer[]): void {
+    const present = new Set(players.map((p) => p.account))
+    for (const [account, num] of [...this.slotOf]) {
+      if (present.has(account)) continue
+      if (this.gs.sprite[num]?.active) this.gs.sprite[num].kill()
+      this.slotOf.delete(account)
+      this.lastInput.delete(account)
+      this.lastAppliedSeq.delete(num)
+      this.prevKills.delete(num)
+      this.prevDeadMeat.delete(num)
+    }
+    let joined = false
+    for (const p of players) {
+      if (this.slotOf.has(p.account)) continue
+      if (this.spawnOne(p)) joined = true
+    }
+    if (joined) this.gs.sortPlayers?.()
   }
 
   spriteNumOf(account: string): number | undefined {
