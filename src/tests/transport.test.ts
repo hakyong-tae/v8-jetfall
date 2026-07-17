@@ -73,31 +73,38 @@ describe('makeAgent8Transport', () => {
     expect(rooms[0]).toMatchObject({ key: 'r1', count: 2 })
   })
   it('offline connect times out to offline (does not hang)', async () => {
-    const hang = { account: 'x', connect: () => new Promise(() => {}), remoteFunction: async () => null, onRoomMessage: () => {} }
+    // connect도 폴링(remoteFunction)도 응답 없음 → 유한 시간 내 offline (행 금지).
+    const hang = { account: 'x', connect: () => new Promise(() => {}), remoteFunction: () => new Promise(() => {}), onRoomMessage: () => {} }
     const t = makeAgent8Transport({ getInstance: () => hang as any, configured: true, timeoutMs: 50, connectAttempts: 2, retryDelayMs: 10 })
     expect(await t.connect()).toBe('offline')
   })
 
-  // 실배포 관찰 회귀: 릴레이 첫 WS가 한 번 끊기고 SDK 백오프 후 붙는 패턴 — 1회 실패로
-  // offline 단정하면 안 되고 재시도로 online에 도달해야 한다("서버 미배포" 오판 버그).
-  it('retries connect and goes online when the first attempt fails (flaky relay)', async () => {
-    let calls = 0
+  // 실배포 관찰 회귀 2제: ①첫 connect 실패/타임아웃으로 offline 오판 금지("서버 미배포" 버그)
+  // ②재-connect를 다시 부르면 SDK가 붙는 중 소켓을 찢어 플랩 증폭(Connected 직후 connect
+  // false 순환) — connect는 정확히 1회, 이후엔 폴링으로 성공만 감지해야 한다.
+  it('first connect fails → polls (no re-connect) and goes online; connect called exactly once', async () => {
     const flaky = {
       account: 'srv-acc',
-      connect: vi.fn(async () => { calls++; if (calls === 1) throw new Error('WebSocket closed before established') }),
-      remoteFunction: async () => null,
+      connect: vi.fn(async () => { throw new Error('WebSocket closed before established') }),
+      remoteFunction: vi.fn(async () => []), // SDK 자체 재접속이 성공한 상태를 모사 — 폴링 응답 OK
       onRoomMessage: () => {},
     }
     const t = makeAgent8Transport({ getInstance: () => flaky as any, configured: true, timeoutMs: 100, retryDelayMs: 10 })
     expect(await t.connect()).toBe('online')
-    expect(calls).toBe(2)
+    expect(flaky.connect).toHaveBeenCalledTimes(1) // ← 재-connect로 SDK와 싸우지 않음
   })
 
-  it('gives up as offline after exhausting all attempts', async () => {
-    const dead = { account: 'x', connect: vi.fn(async () => { throw new Error('down') }), remoteFunction: async () => null, onRoomMessage: () => {} }
+  it('gives up as offline after connect fails and all polls fail', async () => {
+    const dead = {
+      account: 'x',
+      connect: vi.fn(async () => { throw new Error('down') }),
+      remoteFunction: vi.fn(async () => { throw new Error('down') }),
+      onRoomMessage: () => {},
+    }
     const t = makeAgent8Transport({ getInstance: () => dead as any, configured: true, timeoutMs: 100, connectAttempts: 3, retryDelayMs: 10 })
     expect(await t.connect()).toBe('offline')
-    expect(dead.connect).toHaveBeenCalledTimes(3)
+    expect(dead.connect).toHaveBeenCalledTimes(1)
+    expect(dead.remoteFunction).toHaveBeenCalledTimes(3) // 폴링 3회
   })
 })
 
