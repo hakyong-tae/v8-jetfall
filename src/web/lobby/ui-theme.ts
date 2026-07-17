@@ -100,6 +100,10 @@ const THEME_CSS = `
   font-size: 14px; padding: 9px 18px; transition: all 0.08s;
 }
 .jf-btn:hover, .jf-btn:focus-visible { border-color: ${COLOR_YELLOW}; color: ${COLOR_YELLOW}; outline: none; }
+/* 선택 상태 — 방 설정(무기 토글/리스폰/목표킬/시간제한) 버튼이 이 클래스를 쓴다. 팀/맵/무기창
+   전용 규칙만 있고 범용 규칙이 빠져 있어 "선택해도 표시가 안 되던" 버그의 원인이었음. */
+.jf-btn.jf-on { background: ${COLOR_YELLOW}; color: #14140e; border-color: ${COLOR_YELLOW}; }
+.jf-btn.jf-on:disabled { opacity: 0.75; } /* 비방장에게도 현재 선택은 또렷하게 */
 .jf-btn:disabled { opacity: 0.4; }
 .jf-btn-primary { background: #3d3410; border-color: ${COLOR_YELLOW}; color: ${COLOR_YELLOW}; }
 .jf-btn-primary:hover { background: ${COLOR_YELLOW}; color: #14140e; }

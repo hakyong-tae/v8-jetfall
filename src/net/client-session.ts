@@ -33,6 +33,8 @@ export class ClientSession {
   private tickCount = 0
   private known = new Set<number>() // 이미 로컬 createSprite()한 num들
   private nickOf = new Map<number, string>() // num → 닉 (ASSIGN에서 수신, 스코어보드 표시용)
+  private pings = new Map<number, number>() // num → 릴레이 RTT ms (ASSIGN 배포 + 내 것은 로컬 측정)
+  private pingTimer: ReturnType<typeof setInterval> | null = null
   private myAccount: string
   private prevDeadMeat = new Map<number, boolean>() // C단계 — 리스폰 즉시스냅 감지(설계 결정 5)
   private knownFlagSlot = new Map<number, number>() // C단계 — style → 현재 채택된 thingNum(설계 결정 4)
@@ -47,7 +49,11 @@ export class ClientSession {
     this.myAccount = myAccount
     transport.onMessage((event, payload) => {
       if (event === MSG.ASSIGN) {
-        const a = payload as { account: string; num: number; nick?: string }
+        const a = payload as { account: string; num: number; nick?: string; ping?: number }
+        // 핑 배포 수신 — 내 것은 로컬 측정이 더 신선하므로 덮지 않는다.
+        if (typeof a.ping === 'number' && a.ping >= 0 && a.account !== this.myAccount) {
+          this.pings.set(a.num, a.ping)
+        }
         // 스코어보드 표시용 닉 — 스프라이트가 이미 있으면 즉시, 아직이면 ensureLocalSprite가
         // 생성 시점에 적용(60틱 ASSIGN 재방송이 순서 레이스를 자연 치유).
         if (a.nick) {
@@ -76,6 +82,23 @@ export class ClientSession {
       }
     })
   }
+
+  // 스코어보드 표시용: sprite num → 릴레이 RTT(ms).
+  pingOfNum(num: number): number | undefined { return this.pings.get(num) }
+  // 3초마다 자기 RTT 측정 → 로컬 표시 갱신 + 호스트로 보고(호스트가 ASSIGN 재방송으로 전원 배포).
+  startPingSampling(): void {
+    if (this.pingTimer || !this.transport.ping) return
+    const sample = (): void => {
+      void this.transport.ping!().then((ms) => {
+        const v = Math.min(9999, Math.round(ms))
+        if (this.myNum !== null) this.pings.set(this.myNum, v)
+        this.transport.send(MSG.PING, { ping: v })
+      }).catch(() => {})
+    }
+    sample()
+    this.pingTimer = setInterval(sample, 3000)
+  }
+  stopPingSampling(): void { if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null } }
 
   // M5: 로컬 로드아웃(림보) 선택을 호스트로 전송 — 저빈도 JSON(ASSIGN/KILL과 동일 규약).
   // 호출부(loadout-menu.ts)가 로컬 gs에도 이미 즉시 반영(예측) — 여기선 서버 권위 갱신용 통지만.

@@ -462,9 +462,14 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
       .map(([acc, p]) => ({ account: acc, team: p.team, nick: p.nick }))
     hostSession.spawnPlayers(players)
     myNum = hostSession.spriteNumOf(account) ?? -1
+    hostSession.startPingSampling() // 스코어보드 핑 — 자기 RTT 측정(클라 보고는 MSG.PING 수신)
   } else {
     clientSession = new ClientSession(transport, gs, account, () => currentLocalInput)
+    clientSession.startPingSampling() // 스코어보드 핑 — 3초마다 측정→호스트 보고
   }
+  const pingOf = (n: number): number | undefined =>
+    (isHost ? hostSession?.pingOfNum(n) : clientSession?.pingOfNum(n))
+  const stopPing = (): void => { hostSession?.stopPingSampling(); clientSession?.stopPingSampling() }
 
   // ── M9: 매치 중 로스터 감시 — roomState의 p_ 변화(난입/이탈)를 호스트가 스폰/정리로 반영.
   // 핸드오프 시 room 화면 cleanup이 onChange를 초기화하므로 여기서 다시 구독해도 충돌 없음.
@@ -500,6 +505,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     degraded = true
     console.warn(`[net] falling back to offline bots: ${reason}`)
     window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
+    stopPing()
     esc.dispose() // 이전 매치의 ESC 리스너 제거 (새 봇전이 자기 것을 단다)
     app.ticker.stop(); app.destroy(true); document.body.innerHTML = ''
     startBotMatch().catch(fail)
@@ -563,6 +569,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     pausable: false,
     onLeave: () => {
       window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
+      stopPing()
       disposeLoadoutHotkeys()
       void a.lobby.leave().catch(() => undefined)
       if (dedicatedUrl) void transport.leaveRoom().catch(() => undefined)
@@ -598,7 +605,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     entities.update(gs)
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
-      hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
+      hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum }) // M5+핑: Tab 홀드 동안 스코어보드
       // 스코어보드는 hud.update가 이미 gs.teamScore/kills를 읽어 그린다(스냅샷이 그 값을 덮어씀).
       // C단계 추가: 킬피드는 클라 세션 전용(호스트/오프라인 경로는 스킵 → 봇전 회귀 없음).
       if (clientSession) hud.setKillFeed(gs, clientSession.killFeed)
@@ -669,7 +676,7 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
       hud.setKillFeed(gs, clientSession.killFeed)
-      hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
+      hud.showScoreboard(gs, input.isTabHeld(), { pingOf: (n) => clientSession.pingOfNum(n), myNum }) // M5+핑
       const spr = gs.sprite[myNum]
       sound.updateJetpack(spr.control.jetpack && spr.jetsCount > 0, gs.spriteParts.pos[myNum])
       camera.update(gs.spriteParts.pos[myNum].x, gs.spriteParts.pos[myNum].y, input.mouseX, input.mouseY, app.screen.width, app.screen.height)

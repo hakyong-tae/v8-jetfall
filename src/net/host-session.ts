@@ -28,6 +28,7 @@ const ASSIGN_EVERY_N_TICKS = 60
 export class HostSession {
   private slotOf = new Map<string, number>() // account → 스프라이트 num
   private nickOf = new Map<string, string>() // account → 로비 닉네임 (ASSIGN에 실어 클라 스코어보드 표시용)
+  private pingOf = new Map<string, number>() // account → 릴레이 RTT ms (자기 것 + MSG.PING 보고)
   private lastInput = new Map<string, InputMsg>() // account → 최신 수신 입력(누적 아님, 최신값만)
   private lastAppliedSeq = new Map<number, number>() // sprite num → 마지막 적용 seq
   private tickCount = 0
@@ -44,9 +45,29 @@ export class HostSession {
         this.lastInput.set(from, decodeInput(_payload as ArrayBuffer))
       } else if (event === MSG.LOADOUT) {
         this.applyLoadout(from, _payload as LoadoutMsg)
+      } else if (event === MSG.PING) {
+        const p = (_payload as { ping?: number }).ping
+        if (typeof p === 'number' && p >= 0) this.pingOf.set(from, Math.min(9999, Math.round(p)))
       }
     })
   }
+
+  // 스코어보드 표시용: sprite num → 릴레이 RTT(ms). 자기 것은 measureOwnPing이, 클라 것은
+  // MSG.PING 보고가 채운다. ASSIGN 재방송(1s)에 실려 전 클라에 배포된다.
+  pingOfNum(num: number): number | undefined {
+    for (const [account, n] of this.slotOf) if (n === num) return this.pingOf.get(account)
+    return undefined
+  }
+  private pingTimer: ReturnType<typeof setInterval> | null = null
+  startPingSampling(): void {
+    if (this.pingTimer || !this.transport.ping) return
+    const sample = (): void => {
+      void this.transport.ping!().then((ms) => this.pingOf.set(this.transport.account, Math.min(9999, Math.round(ms)))).catch(() => {})
+    }
+    sample()
+    this.pingTimer = setInterval(sample, 3000)
+  }
+  stopPingSampling(): void { if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null } }
 
   // M5: 클라가 무기선택(림보) 메뉴에서 고른 값 반영 — 죽어있으면 다음 respawn()이 코어 규칙대로
   // 자동 반영(selWeapon/secWep만 갱신), 살아있으면 즉시 applyWeaponByNum으로 장착(원작 규칙,
@@ -193,7 +214,11 @@ export class HostSession {
   // 늦게 합류/재접속한 클라를 위해 전 플레이어의 슬롯 배정을 주기적으로 재전송(멱등).
   private rebroadcastAssignments(): void {
     for (const [account, num] of this.slotOf) {
-      this.transport.send(MSG.ASSIGN, { account, num, nick: this.nickOf.get(account) || '' })
+      this.transport.send(MSG.ASSIGN, {
+        account, num,
+        nick: this.nickOf.get(account) || '',
+        ping: this.pingOf.get(account) ?? -1, // -1 = 아직 측정 안 됨('-' 표시)
+      })
     }
   }
 

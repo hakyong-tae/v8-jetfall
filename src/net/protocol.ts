@@ -7,6 +7,7 @@ export const MSG = {
   START: 'start',   // 호스트→전체: 매치 시작 (A단계에서 종류만 예약)
   ASSIGN: 'assign', // B단계 신규 — 호스트→해당 계정: {account, num} 배정된 스프라이트 번호 통지 (저빈도, JSON 그대로)
   LOADOUT: 'loadout', // M5 신규 — 클라→호스트: {selWeapon, secWep} 무기선택(림보) 반영 요청 (저빈도, JSON 그대로 — ASSIGN/KILL과 동일 규약)
+  PING: 'ping', // 스코어보드용 — 클라→호스트: {ping} 자기 릴레이 RTT(ms) 보고 (~3초 주기, 저빈도 JSON). 배포는 ASSIGN 재방송에 실려 나감.
 } as const
 
 export type MsgKind = (typeof MSG)[keyof typeof MSG]

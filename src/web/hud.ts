@@ -44,6 +44,7 @@ export class Hud {
   private readonly topText: Text
   private readonly killFeedText: Text
   private readonly scoreboardBg = new Graphics()
+  private readonly scoreboardTitle: Text
   private readonly scoreboardText: Text
   private icons = new Map<string, Texture>()
   private screenW = 0
@@ -64,11 +65,17 @@ export class Hud {
       style: { fill: 0xffe08a, fontSize: 14, fontFamily: 'monospace', align: 'right' },
     })
     this.killFeedText.anchor.set(1, 0) // 우측 상단 정렬
+    this.scoreboardTitle = new Text({
+      text: '',
+      style: { fill: 0xf5d442, fontSize: 15, fontFamily: 'monospace', align: 'center', fontWeight: 'bold', letterSpacing: 2 },
+    })
+    this.scoreboardTitle.anchor.set(0.5, 0)
     this.scoreboardText = new Text({
       text: '',
-      style: { fill: 0xffffff, fontSize: 14, fontFamily: 'monospace', align: 'left' },
+      style: { fill: 0xffffff, fontSize: 14, fontFamily: 'monospace', align: 'left', lineHeight: 20 },
     })
     this.scoreboardBg.visible = false
+    this.scoreboardTitle.visible = false
     this.scoreboardText.visible = false
     this.weaponIcon.anchor.set(1, 1)
     this.container.addChild(this.bars)
@@ -77,6 +84,7 @@ export class Hud {
     this.container.addChild(this.topText)
     this.container.addChild(this.killFeedText)
     this.container.addChild(this.scoreboardBg)
+    this.container.addChild(this.scoreboardTitle)
     this.container.addChild(this.scoreboardText)
   }
 
@@ -182,37 +190,58 @@ export class Hud {
   // ── M5: Tab 스코어보드. show=true인 동안(키 홀드) 매 프레임 호출 — 테이블 재구성은 저비용
   // (MAX_SPRITES=32 스캔)이라 매 프레임 다시 그려도 무해. DM=이름/킬/데스, CTF=+팀/캡처+팀스코어
   // (기존 상단 topText와 동일 gs.teamScore 소스).
-  showScoreboard(gs: GameState, show: boolean): void {
+  showScoreboard(gs: GameState, show: boolean, opts?: ScoreboardOpts): void {
     this.scoreboardBg.visible = show
+    this.scoreboardTitle.visible = show
     this.scoreboardText.visible = show
     if (!show) return
 
     const isCtf = gs.svGamemode === GAMESTYLE_CTF
-    const rows = buildScoreboardRows(gs)
-    const pad = (s: string, n: number): string => (s.length >= n ? s.slice(0, n - 1) + ' ' : s.padEnd(n))
-    const lines: string[] = []
-    if (isCtf) {
-      lines.push(`Alpha ${gs.teamScore[TEAM_ALPHA]}   -   ${gs.teamScore[TEAM_BRAVO]} Bravo`)
-      lines.push('')
-      lines.push(pad(t('sb.name'), 16) + pad(t('sb.team'), 8) + pad(t('sb.kills'), 7) + pad(t('sb.deaths'), 8) + t('sb.caps'))
-      for (const r of rows) {
-        lines.push(
-          pad(r.name, 16) + pad(teamLabel(r.team), 8) + pad(String(r.kills), 7) + pad(String(r.deaths), 8) + String(r.caps),
-        )
-      }
-    } else {
-      lines.push(pad(t('sb.name'), 16) + pad(t('sb.kills'), 7) + t('sb.deaths'))
-      for (const r of rows) lines.push(pad(r.name, 16) + pad(String(r.kills), 7) + String(r.deaths))
-    }
+    const rows = buildScoreboardRows(gs, opts?.pingOf)
+    const online = !!opts?.pingOf // 온라인 매치에서만 핑 열 노출(봇전은 무의미)
+    const padR = (s: string, n: number): string => (s.length >= n ? s.slice(0, n - 1) + ' ' : s.padEnd(n))
+    const padL = (s: string, n: number): string => (s.length >= n ? s.slice(0, n) : s.padStart(n))
+    const fmtPing = (p?: number): string => (p === undefined || p < 0 ? '-' : String(p))
+    const fmtKd = (k: number, d: number): string => (d === 0 ? (k > 0 ? k.toFixed(1) : '0.0') : (k / d).toFixed(1))
+
+    // 타이틀: 모드 + 목표 (CTF는 팀 스코어). 남은 시간은 상단 HUD가 이미 표시.
+    this.scoreboardTitle.text = isCtf
+      ? `CTF   Alpha ${gs.teamScore[TEAM_ALPHA]} : ${gs.teamScore[TEAM_BRAVO]} Bravo   (${t('sb.goal')} ${gs.svKilllimit})`
+      : `DEATHMATCH   ${t('sb.goal')} ${gs.svKilllimit} ${t('sb.kills')}`
+
+    // 헤더 + 구분선 + 행 (모노스페이스 컬럼 — 핑은 우측 정렬 끝 열)
+    const NAME_W = 15
+    const header =
+      padR('#', 3) + padR(t('sb.name'), NAME_W) + (isCtf ? padR(t('sb.team'), 7) : '') +
+      padL(t('sb.kills'), 5) + padL(t('sb.deaths'), 5) + padL('K/D', 6) +
+      (isCtf ? padL(t('sb.caps'), 6) : '') + (online ? padL(t('sb.ping'), 7) : '')
+    const lines: string[] = [header, '─'.repeat(header.length)]
+    let selfLine = -1
+    rows.forEach((r, i) => {
+      if (r.num === opts?.myNum) selfLine = lines.length
+      lines.push(
+        padR(String(i + 1), 3) + padR(r.name, NAME_W) + (isCtf ? padR(teamLabel(r.team), 7) : '') +
+        padL(String(r.kills), 5) + padL(String(r.deaths), 5) + padL(fmtKd(r.kills, r.deaths), 6) +
+        (isCtf ? padL(String(r.caps), 6) : '') + (online ? padL(fmtPing(r.ping), 7) : ''),
+      )
+    })
 
     this.scoreboardText.text = lines.join('\n')
-    const boxW = 360
-    const boxH = 30 + lines.length * 18
+    const LINE_H = 20
+    const boxW = Math.max(isCtf ? 520 : 440, this.scoreboardText.width + 36)
+    const boxH = 46 + lines.length * LINE_H + 12
     const boxX = this.screenW / 2 - boxW / 2
     const boxY = 56
-    this.scoreboardText.position.set(boxX + 14, boxY + 10)
+    this.scoreboardTitle.position.set(this.screenW / 2, boxY + 12)
+    this.scoreboardText.position.set(boxX + 18, boxY + 40)
     this.scoreboardBg.clear()
-    this.scoreboardBg.rect(boxX, boxY, boxW, boxH).fill({ color: 0x000000, alpha: 0.6 })
+    this.scoreboardBg.rect(boxX, boxY, boxW, boxH).fill({ color: 0x0a0a06, alpha: 0.82 })
+    this.scoreboardBg.rect(boxX, boxY, boxW, 2).fill({ color: 0xf5d442, alpha: 0.9 }) // 상단 포인트 라인
+    if (selfLine >= 0) { // 내 행 하이라이트
+      this.scoreboardBg
+        .rect(boxX + 8, boxY + 40 + selfLine * LINE_H - 2, boxW - 16, LINE_H)
+        .fill({ color: 0xf5d442, alpha: 0.14 })
+    }
   }
 }
 
@@ -222,6 +251,11 @@ export function weaponHasIcon(weaponNum: number): boolean {
 }
 
 // ── M5: 스코어보드 데이터 집계 (렌더 무관 순수 함수 — 단위테스트 대상) ───────────
+export interface ScoreboardOpts {
+  pingOf?: (num: number) => number | undefined // 온라인 매치: sprite num → 릴레이 RTT ms
+  myNum?: number // 내 스프라이트 번호 — 행 하이라이트
+}
+
 export interface ScoreboardRow {
   num: number
   name: string
@@ -229,11 +263,12 @@ export interface ScoreboardRow {
   kills: number
   deaths: number
   caps: number // player.flags (Things.pas 캡처 스코어링, CTF 전용 — DM에선 항상 0)
+  ping?: number // 릴레이 RTT ms (온라인 매치 전용, -1/undefined = 미측정)
 }
 
 // active && player 필터로 봇 포함 전원 나열, Kills 내림차순(원작 Game.pas SortPlayers와 동일 기준 —
 // 동률 시 flags>deaths 세부정렬은 스코프 밖, Kills desc만 요구사항).
-export function buildScoreboardRows(gs: GameState): ScoreboardRow[] {
+export function buildScoreboardRows(gs: GameState, pingOf?: (num: number) => number | undefined): ScoreboardRow[] {
   const rows: ScoreboardRow[] = []
   for (let i = 1; i <= MAX_SPRITES; i++) {
     const spr = gs.sprite[i]
@@ -245,6 +280,7 @@ export function buildScoreboardRows(gs: GameState): ScoreboardRow[] {
       kills: spr.player.kills,
       deaths: spr.player.deaths,
       caps: spr.player.flags,
+      ping: pingOf?.(i),
     })
   }
   rows.sort((a, b) => b.kills - a.kills)

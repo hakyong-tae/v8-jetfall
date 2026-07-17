@@ -54,4 +54,6 @@ export interface Transport {
   send(event: string, payload: unknown, hot?: boolean): void
   onMessage(handler: MessageHandler): void
   onRoomState(handler: (s: RoomState) => void): void
+  // 릴레이 왕복시간(ms) 측정 — 스코어보드 핑 표시용. 옵셔널(loopback 등은 미구현 → 0 취급).
+  ping?(): Promise<number>
 }

@@ -142,6 +142,13 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       if (t.status !== 'online' || !server) return []
       return ((await withTimeout(server.remoteFunction('listRooms', []), timeoutMs)) as RoomListing[]) ?? []
     },
+    // 릴레이 RTT — 가장 가벼운 서버함수(now) 왕복으로 측정.
+    async ping() {
+      if (t.status !== 'online' || !server) return 0
+      const t0 = Date.now()
+      await withTimeout(server.remoteFunction('now', []), timeoutMs)
+      return Date.now() - t0
+    },
     async joinRoom(key: string, mode?: number) {
       if (t.status !== 'online' || !server) return
       await withTimeout(server.remoteFunction('joinRoom', [key, mode]), timeoutMs)
