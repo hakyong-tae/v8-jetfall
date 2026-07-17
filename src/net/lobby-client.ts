@@ -31,13 +31,21 @@ export class LobbyClient {
   }
   async createRoom(key: string, mode: number) {
     this.roomKey = key // M3-E
-    await this.transport.joinRoom(key)
+    await this.transport.joinRoom(key, mode) // mode 전달 — 목록의 모드 오표기(항상 DM) 수정
     await this.transport.updateRoomState({
       mode, hostAccount: this.account, started: false, roundEndsAt: 0,
       settings: defaultRoomSettings(mode), // M8: 방 상세설정 기본값
       ['p_' + this.account]: this.me(),
     })
     this.roomState = await this.transport.getRoomState()
+  }
+
+  // 방 목록(soldat_rooms) upsert 하트비트 — 방장이 room 화면에서 주기 호출. 실 릴레이에서
+  // joinRoom의 컬렉션 쓰기가 조용히 실패해 다른 브라우저에 방이 안 보이는 사고의 자가치유.
+  // 전송이 touchRoom 미지원(loopback 등)이면 no-op. 실패는 던진다(호출자가 콘솔 경고).
+  async touchRoom(): Promise<void> {
+    if (!this.roomKey) return
+    await this.transport.touchRoom?.(this.roomKey, this.roomState.mode ?? 0, !!this.roomState.started)
   }
   async joinRoom(key: string) {
     this.roomKey = key // M3-E

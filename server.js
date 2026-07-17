@@ -10,7 +10,7 @@ class Server {
     return rooms.map((r) => ({ key: r.key, count: r.count || 0, mode: r.mode || 0, started: !!r.started }))
   }
 
-  async joinRoom(key) {
+  async joinRoom(key, mode) {
     let target = key
     if (!target) {
       const rooms = await $global.getCollectionItems('soldat_rooms', { limit: 100 }).catch(() => [])
@@ -18,8 +18,14 @@ class Server {
       if (!target) { let n = 1; const have = new Set(rooms.map((r) => r.key)); while (have.has('sr' + n)) n++; target = 'sr' + n }
     }
     await $global.joinRoom(target)
-    await $global.updateCollectionItem('soldat_rooms', target, { key: target, count: await this._count(), mode: (await $room.getRoomState()).mode || 0, started: false })
+    // mode는 클라 인자 우선(등록 시점 roomState는 비어 mode 0 오표기 버그). 쓰기 실패는 삼키되
+    // touchRoom 하트비트가 자가치유.
+    await $global.updateCollectionItem('soldat_rooms', target, { key: target, count: await this._count(), mode: mode ?? (await $room.getRoomState()).mode ?? 0, started: false }).catch(() => {})
     return { roomId: target }
+  }
+  // 방 목록 upsert 하트비트(방장 주기 호출) — 컬렉션 쓰기 실패 자가치유 + 인원/모드/진행 최신화.
+  async touchRoom(key, mode, started) {
+    await $global.updateCollectionItem('soldat_rooms', key, { key, count: await this._count(), mode: mode ?? 0, started: !!started })
   }
   async _count() {
     const s = await $room.getRoomState(); return Object.keys(s).filter((k) => k.startsWith('p_')).length

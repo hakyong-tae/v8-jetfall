@@ -29,6 +29,16 @@ describe('makeAgent8Transport', () => {
     expect(await t.connect()).toBe('online')
     expect(t.account).toBe('srv-acc')
   })
+  it('joinRoom forwards mode; touchRoom upserts via remoteFunction', async () => {
+    const s = mockServer()
+    const t = makeAgent8Transport({ getInstance: () => s as any, configured: true })
+    await t.connect()
+    await t.joinRoom('r9', 3)
+    expect(s.remoteFunction).toHaveBeenCalledWith('joinRoom', ['r9', 3])
+    await t.touchRoom!('r9', 3, true)
+    expect(s.remoteFunction).toHaveBeenCalledWith('touchRoom', ['r9', 3, true])
+  })
+
   it('listRooms delegates to remoteFunction', async () => {
     const t = makeAgent8Transport({ getInstance: () => mockServer() as any, configured: true })
     await t.connect()

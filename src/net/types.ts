@@ -42,7 +42,10 @@ export interface Transport {
   readonly status: 'offline' | 'connecting' | 'online'
   connect(): Promise<Transport['status']>
   listRooms(): Promise<RoomListing[]>
-  joinRoom(roomKey: string): Promise<void>       // 없으면 생성
+  joinRoom(roomKey: string, mode?: number): Promise<void> // 없으면 생성. mode는 목록 표기용(서버 컬렉션)
+  // 방 목록(soldat_rooms 컬렉션) upsert 하트비트 — 실 릴레이에서 컬렉션 쓰기가 조용히 실패해
+  // 다른 브라우저에 방이 안 보이는 사고의 자가치유. 옵셔널(loopback/ws 등 목록 없는 전송은 미구현).
+  touchRoom?(roomKey: string, mode: number, started: boolean): Promise<void>
   leaveRoom(): Promise<void>
   getRoomState(): Promise<RoomState>
   updateRoomState(patch: Record<string, unknown>): Promise<void>  // 얕은병합, null=삭제

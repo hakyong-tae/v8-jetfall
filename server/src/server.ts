@@ -22,7 +22,7 @@ export class Server {
     }));
   }
 
-  async joinRoom(key: string | null): Promise<{ roomId: string }> {
+  async joinRoom(key: string | null, mode?: number): Promise<{ roomId: string }> {
     let target: string = key as string;
     if (!target) {
       const rooms = await $global.getCollectionItems("soldat_rooms", { limit: 100 }).catch(() => []);
@@ -40,11 +40,14 @@ export class Server {
       }
     }
     await $global.joinRoom(target);
+    // mode는 클라가 넘긴 값 우선 — 등록 시점엔 roomState가 아직 비어 mode가 항상 0(DM)으로
+    // 잘못 표기되던 버그 수정. 컬렉션 쓰기 실패는 삼키되(입장 자체는 성공시켜야 함), 방장측
+    // touchRoom 하트비트가 재등록으로 자가치유한다.
     await $global
       .updateCollectionItem("soldat_rooms", target, {
         key: target,
         count: await this._count(),
-        mode: (await $room.getRoomState()).mode || 0,
+        mode: mode ?? (await $room.getRoomState()).mode ?? 0,
         started: false,
       })
       .catch(() => {});
@@ -54,6 +57,17 @@ export class Server {
   async _count(): Promise<number> {
     const s = await $room.getRoomState();
     return Object.keys(s).filter((k: string) => k.startsWith("p_")).length;
+  }
+
+  // 방 목록 upsert 하트비트(방장이 주기 호출) — joinRoom의 컬렉션 쓰기가 실패했어도 재등록으로
+  // 자가치유 + 인원수/모드/진행상태 최신화. 실패를 삼키지 않는다(클라가 콘솔 경고로 가시화).
+  async touchRoom(key: string, mode: number, started: boolean): Promise<void> {
+    await $global.updateCollectionItem("soldat_rooms", key, {
+      key,
+      count: await this._count(),
+      mode: mode ?? 0,
+      started: !!started,
+    });
   }
 
   async leaveRoom(): Promise<string> {

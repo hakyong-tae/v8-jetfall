@@ -446,7 +446,8 @@ function renderLobby(ctx: Ctx, scr: HTMLElement): void {
       b.addEventListener('click', () => void enterRoom(ctx, (b as HTMLElement).dataset.join!)))
   }
   const refresh = async (): Promise<void> => {
-    try { rooms = await lc.listRooms(); drawRooms() } catch { /* 목록 실패는 다음 주기 재시도 */ }
+    try { rooms = await lc.listRooms(); drawRooms() }
+    catch (e) { console.warn('[lobby] listRooms failed (다음 주기 재시도):', e) } // 실릴레이 진단 가시화
   }
   void refresh()
   const timer = window.setInterval(() => void refresh(), 3000) // 3s 주기 갱신 (plan Task3)
@@ -610,6 +611,16 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
     handoff(ctx)
     ctx.opts.onStartMatch({ lobby: lc, mode: lc.roomState.mode, myTeam })
   })
+  // 방 목록 자가치유 하트비트 — 방장이 5초마다 soldat_rooms 컬렉션에 재등록(upsert). 실 릴레이에서
+  // joinRoom의 컬렉션 쓰기가 조용히 실패해 다른 브라우저 로비에 방이 안 보이던 사고를 치유하고
+  // 인원수도 최신화한다. 즉시 1회 + 주기. 실패는 콘솔로 가시화(다음 주기 재시도).
+  const touch = (): void => {
+    if (!lc.isHost) return
+    void lc.touchRoom().catch((e) => console.warn('[room] touchRoom failed (방 목록 미표시 가능):', e))
+  }
+  touch()
+  const touchTimer = window.setInterval(touch, 5000)
+  ctx.cleanup.push(() => window.clearInterval(touchTimer))
   ctx.cleanup.push(() => { lc.onChange(() => {}); lc.onStart(() => {}) })
   draw()
 }

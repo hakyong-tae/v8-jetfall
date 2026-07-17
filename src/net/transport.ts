@@ -92,9 +92,9 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       if (t.status !== 'online' || !server) return []
       return ((await withTimeout(server.remoteFunction('listRooms', []), timeoutMs)) as RoomListing[]) ?? []
     },
-    async joinRoom(key: string) {
+    async joinRoom(key: string, mode?: number) {
       if (t.status !== 'online' || !server) return
-      await withTimeout(server.remoteFunction('joinRoom', [key]), timeoutMs)
+      await withTimeout(server.remoteFunction('joinRoom', [key, mode]), timeoutMs)
       roomKey = key
       server.onRoomMessage(key, 'relay', (m) => {
         const { event, payload, from } = m as { event: string; payload: unknown; from: string }
@@ -106,6 +106,13 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
       if (t.status !== 'online' || !server) return
       await server.remoteFunction('leaveRoom', []).catch(() => {})
       roomKey = null
+    },
+    // 방 목록 컬렉션 upsert 하트비트 — 실 릴레이에서 joinRoom의 컬렉션 쓰기가 조용히 실패하면
+    // 다른 브라우저에 방이 영영 안 보인다. 방장이 주기 호출해 자가치유(실패는 호출자에 전파 →
+    // 콘솔 경고로 가시화).
+    async touchRoom(key: string, mode: number, started: boolean) {
+      if (t.status !== 'online' || !server) return
+      await withTimeout(server.remoteFunction('touchRoom', [key, mode, started]), timeoutMs)
     },
     async getRoomState() {
       if (t.status !== 'online' || !server) return {} as RoomState
