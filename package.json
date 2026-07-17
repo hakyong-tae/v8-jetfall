@@ -20,7 +20,7 @@
     "vitest": "^3.2.7"
   },
   "dependencies": {
-    "@agent8/gameserver": "^1.5.3",
+    "@agent8/gameserver": "^1.10.2",
     "pixi.js": "^8.19.0",
     "ws": "^8.21.0"
   }
