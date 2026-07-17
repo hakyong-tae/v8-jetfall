@@ -459,7 +459,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   if (isHost) {
     hostSession = new HostSession(transport, gs)
     const players: HostSessionPlayer[] = Object.entries(a.lobby.players)
-      .map(([acc, p]) => ({ account: acc, team: p.team }))
+      .map(([acc, p]) => ({ account: acc, team: p.team, nick: p.nick }))
     hostSession.spawnPlayers(players)
     myNum = hostSession.spriteNumOf(account) ?? -1
   } else {
@@ -478,7 +478,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     if (!rosterDirty || !isHost || !hostSession) return
     rosterDirty = false
     hostSession.syncRoster(Object.entries(a.lobby.players)
-      .map(([acc, p]) => ({ account: acc, team: p.team })))
+      .map(([acc, p]) => ({ account: acc, team: p.team, nick: p.nick })))
     if (myNum < 0) myNum = hostSession.spriteNumOf(account) ?? -1
   }
 

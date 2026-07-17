@@ -32,6 +32,7 @@ export class ClientSession {
   private seq = 0
   private tickCount = 0
   private known = new Set<number>() // 이미 로컬 createSprite()한 num들
+  private nickOf = new Map<number, string>() // num → 닉 (ASSIGN에서 수신, 스코어보드 표시용)
   private myAccount: string
   private prevDeadMeat = new Map<number, boolean>() // C단계 — 리스폰 즉시스냅 감지(설계 결정 5)
   private knownFlagSlot = new Map<number, number>() // C단계 — style → 현재 채택된 thingNum(설계 결정 4)
@@ -46,7 +47,14 @@ export class ClientSession {
     this.myAccount = myAccount
     transport.onMessage((event, payload) => {
       if (event === MSG.ASSIGN) {
-        const a = payload as { account: string; num: number }
+        const a = payload as { account: string; num: number; nick?: string }
+        // 스코어보드 표시용 닉 — 스프라이트가 이미 있으면 즉시, 아직이면 ensureLocalSprite가
+        // 생성 시점에 적용(60틱 ASSIGN 재방송이 순서 레이스를 자연 치유).
+        if (a.nick) {
+          this.nickOf.set(a.num, a.nick)
+          const spr = this.gs.sprite[a.num]
+          if (spr?.active && spr.player) spr.player.name = a.nick
+        }
         // 리뷰 finding #2: 역방향 유일성 — 이탈+난입이 같은 프레임에 겹치면 해제된 슬롯 num이
         // 즉시 재사용되고, 그 num이 빠진 스냅샷이 한 번도 안 나가 pruneDeparted가 못 지운다.
         // 옛 계정→같은 num 매핑이 남으면 호스트 승격 시 syncRoster가 현 플레이어를 kill()하고
@@ -101,6 +109,7 @@ export class ClientSession {
     const tPlayer = createTPlayer()
     tPlayer.team = team
     tPlayer.controlMethod = HUMAN
+    tPlayer.name = this.nickOf.get(num) ?? '' // ASSIGN이 먼저 왔으면 닉 적용(아니면 재방송이 채움)
     // n=num 지정 — createSprite는 n!==255면 그 슬롯을 그대로 쓴다(sprites.ts:3912-3925) →
     // 호스트가 배정한 것과 정확히 같은 슬롯에 재현.
     createSprite(this.gs, vector2(pos.x, pos.y), vector2(0, 0), 1, num, tPlayer, true)

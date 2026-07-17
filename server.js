@@ -1,8 +1,9 @@
 // server.js — Soldat Verse8 서버. 배포: npx -y @agent8/deploy
 // 규약: 클래스 정의만, export/타이머 금지. 전역 $global/$room/$sender.
 const CAP = 8
-// 방 하트비트(클라 5초)의 4배 — 이 안에 touchRoom이 없으면 죽은 방으로 간주(목록 숨김+삭제).
-const STALE_MS = 20000
+// 이 안에 touchRoom 하트비트(클라 5초)가 없으면 죽은 방 간주(목록 숨김+삭제). 90초: 백그라운드
+// 탭은 Chrome intensive throttling으로 타이머가 분당 1회까지 늦어져 20초면 산 방이 사라짐.
+const STALE_MS = 90000
 
 class Server {
   now() { return Date.now() }

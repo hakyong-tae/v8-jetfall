@@ -16,7 +16,7 @@ import { vector2 } from '../core/vector'
 import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
 import { pickAutoTeamFromTeams } from './dropin'
 
-export interface HostSessionPlayer { account: string; team: number }
+export interface HostSessionPlayer { account: string; team: number; nick?: string }
 
 // 60Hz 틱 중 2틱마다 브로드캐스트 ⇒ 30Hz (스펙 §4.2 "~20-30Hz" 범위 내).
 const SNAPSHOT_EVERY_N_TICKS = 2
@@ -27,6 +27,7 @@ const ASSIGN_EVERY_N_TICKS = 60
 
 export class HostSession {
   private slotOf = new Map<string, number>() // account → 스프라이트 num
+  private nickOf = new Map<string, string>() // account → 로비 닉네임 (ASSIGN에 실어 클라 스코어보드 표시용)
   private lastInput = new Map<string, InputMsg>() // account → 최신 수신 입력(누적 아님, 최신값만)
   private lastAppliedSeq = new Map<number, number>() // sprite num → 마지막 적용 seq
   private tickCount = 0
@@ -110,8 +111,9 @@ export class HostSession {
     tPlayer.team = team
     tPlayer.controlMethod = HUMAN
     // 이름이 비면 코어 respawn()이 조기 반환(sprites.ts:3506 `{$IFNDEF SERVER}` 가드)해
-    //   사망 후 영구히 리스폰 못 함 — 계정명을 부여해 리스폰 경로를 활성화.
-    tPlayer.name = p.account
+    //   사망 후 영구히 리스폰 못 함. 표시용으로는 로비 닉네임을 우선(스코어보드가
+    //   'anonymous-…' 계정 문자열 대신 닉을 보여주게), 닉이 비면 계정명 폴백.
+    tPlayer.name = p.nick || p.account
     const r = randomizeStart(this.gs, p.team)
     const num = createSprite(this.gs, r.start, vector2(0, 0), 1, 255, tPlayer, true)
     if (num < 0) return false // 서버 만원(MAX_SPRITES) — 호출자가 CAP=8로 사전 제한(server.js와 동일 규약)
@@ -123,7 +125,8 @@ export class HostSession {
     //   발생한 변화도 첫 tick()의 diff가 올바르게 잡도록 한다(lazy-init 사각지대 제거).
     this.prevKills.set(num, this.gs.sprite[num].player!.kills)
     this.prevDeadMeat.set(num, this.gs.sprite[num].deadMeat)
-    this.transport.send(MSG.ASSIGN, { account: p.account, num })
+    this.nickOf.set(p.account, p.nick || '')
+    this.transport.send(MSG.ASSIGN, { account: p.account, num, nick: p.nick || '' })
     return true
   }
 
@@ -190,7 +193,7 @@ export class HostSession {
   // 늦게 합류/재접속한 클라를 위해 전 플레이어의 슬롯 배정을 주기적으로 재전송(멱등).
   private rebroadcastAssignments(): void {
     for (const [account, num] of this.slotOf) {
-      this.transport.send(MSG.ASSIGN, { account, num })
+      this.transport.send(MSG.ASSIGN, { account, num, nick: this.nickOf.get(account) || '' })
     }
   }
 

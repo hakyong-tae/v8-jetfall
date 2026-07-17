@@ -1,7 +1,9 @@
 const CAP = 8;
-// 방 하트비트(클라 5초)의 4배 — 이 시간 안에 touchRoom이 없으면 죽은 방으로 간주하고 목록에서
-// 숨김+삭제. (호스트 크래시/탭닫힘으로 leaveRoom이 안 불린 방의 유령 등록 청소)
-const STALE_MS = 20000;
+// 이 시간 안에 touchRoom 하트비트(클라 5초 주기)가 없으면 죽은 방으로 간주하고 목록에서
+// 숨김+삭제(호스트 크래시/탭닫힘으로 leaveRoom이 안 불린 유령 등록 청소). 90초인 이유:
+// 호스트가 브라우저 탭을 백그라운드로 두면 Chrome intensive throttling이 타이머를 분당
+// 1회까지 늦춘다 — 20초면 대기중인 호스트의 방이 목록에서 사라져 버린다(라이브 관찰).
+const STALE_MS = 90000;
 
 interface RoomListingItem {
   key: string;
