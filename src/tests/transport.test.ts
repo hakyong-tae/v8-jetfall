@@ -39,6 +39,33 @@ describe('makeAgent8Transport', () => {
     expect(s.remoteFunction).toHaveBeenCalledWith('touchRoom', ['r9', 3, true])
   })
 
+  // 실배포 관찰 회귀: 릴레이 WS 플랩 중 fire-and-forget 쓰기가 조용히 유실돼 방 설정/팀/레디
+  // 클릭이 "반영 안 됨" — needResponse+재시도로 플랩 사이를 건너뛰고, 소진 시 던져 UI가 알림.
+  it('updateRoomState retries through a flap and succeeds', async () => {
+    let calls = 0
+    const s = mockServer()
+    s.remoteFunction = vi.fn(async (name: string) => {
+      if (name === 'updateRoomState') { calls++; if (calls === 1) throw new Error('socket closed') }
+      return null
+    })
+    const t = makeAgent8Transport({ getInstance: () => s as any, configured: true, timeoutMs: 100 })
+    await t.connect()
+    await t.updateRoomState({ x: 1 }) // 1회 실패 후 재시도 성공 — 던지지 않아야 함
+    expect(calls).toBe(2)
+  })
+
+  it('updateRoomState throws after exhausting retries (UI can toast)', async () => {
+    const s = mockServer()
+    s.remoteFunction = vi.fn(async (name: string) => {
+      if (name === 'updateRoomState') throw new Error('down')
+      return null
+    })
+    const t = makeAgent8Transport({ getInstance: () => s as any, configured: true, timeoutMs: 100 })
+    await t.connect()
+    await expect(t.updateRoomState({ x: 1 })).rejects.toThrow()
+    expect(s.remoteFunction).toHaveBeenCalledTimes(3)
+  })
+
   it('listRooms delegates to remoteFunction', async () => {
     const t = makeAgent8Transport({ getInstance: () => mockServer() as any, configured: true })
     await t.connect()

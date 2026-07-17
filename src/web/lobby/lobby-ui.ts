@@ -605,27 +605,27 @@ function renderRoom(ctx: Ctx, scr: HTMLElement): void {
         <button class="jf-btn" id="jf-leave">Leave</button>
       </div>`
     panel.querySelectorAll('[data-team]').forEach((b) =>
-      b.addEventListener('click', () => void lc.selectTeam(Number((b as HTMLElement).dataset.team))))
+      b.addEventListener('click', () => void lc.selectTeam(Number((b as HTMLElement).dataset.team)).catch(() => showToast(t('room.saveFailed')))))
     // ── M8: 설정 변경 핸들러 (방장 전용 — 비방장 버튼은 disabled라 클릭 불가, 이중 가드) ──
     if (host) {
       panel.querySelectorAll<HTMLButtonElement>('[data-map]').forEach((b) =>
-        b.addEventListener('click', () => void lc.updateSettings({ mapKey: b.dataset.map! })))
+        b.addEventListener('click', () => void lc.updateSettings({ mapKey: b.dataset.map! }).catch(() => showToast(t('room.saveFailed')))))
       panel.querySelectorAll<HTMLButtonElement>('[data-wpn]').forEach((b) =>
         b.addEventListener('click', () => {
           const i = Number(b.dataset.wpn)
           const wa = [...mergeRoomSettings(lc.roomState.settings).weaponActive]
           if (wa[i] === 1 && !canDisableWeapon(wa, i)) return // 그룹 최소 1종 가드 — 마지막 하나는 못 끔
           wa[i] = wa[i] === 1 ? 0 : 1
-          void lc.updateSettings({ weaponActive: wa })
+          void lc.updateSettings({ weaponActive: wa }).catch(() => showToast(t('room.saveFailed')))
         }))
       panel.querySelectorAll<HTMLButtonElement>('[data-rs]').forEach((b) =>
-        b.addEventListener('click', () => void lc.updateSettings({ respawnSeconds: Number(b.dataset.rs) })))
+        b.addEventListener('click', () => void lc.updateSettings({ respawnSeconds: Number(b.dataset.rs) }).catch(() => showToast(t('room.saveFailed')))))
       panel.querySelectorAll<HTMLButtonElement>('[data-kl]').forEach((b) =>
-        b.addEventListener('click', () => void lc.updateSettings({ killLimit: Number(b.dataset.kl) })))
+        b.addEventListener('click', () => void lc.updateSettings({ killLimit: Number(b.dataset.kl) }).catch(() => showToast(t('room.saveFailed')))))
       panel.querySelectorAll<HTMLButtonElement>('[data-tl]').forEach((b) =>
-        b.addEventListener('click', () => void lc.updateSettings({ timeLimitMin: Number(b.dataset.tl) })))
+        b.addEventListener('click', () => void lc.updateSettings({ timeLimitMin: Number(b.dataset.tl) }).catch(() => showToast(t('room.saveFailed')))))
     }
-    panel.querySelector('#jf-ready')!.addEventListener('click', () => void lc.setReady(!(me?.ready ?? false)))
+    panel.querySelector('#jf-ready')!.addEventListener('click', () => void lc.setReady(!(me?.ready ?? false)).catch(() => showToast(t('room.saveFailed'))))
     // M8: 시작 시 'random' 해석용 후보 풀 전달 — 호스트가 확정 키를 settings에 기록(디싱크 수정).
     panel.querySelector('#jf-start')?.addEventListener('click', () =>
       void lc.start(mapKeys ?? undefined).catch(() => showToast('시작 실패')))

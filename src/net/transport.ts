@@ -120,7 +120,22 @@ export function makeAgent8Transport(provider: Agent8Provider): Transport {
     },
     async updateRoomState(patch: Record<string, unknown>) {
       if (t.status !== 'online' || !server) return
-      await server.remoteFunction('updateRoomState', [patch], { needResponse: false })
+      // 실배포 관찰: 릴레이 WS가 수시로 끊겼다 붙는 동안 fire-and-forget 쓰기가 조용히 유실돼
+      // 방 설정/팀/레디 클릭이 "반영 안 되는" 증상이 됨(콘솔 net timeout들이 그 흔적).
+      // 응답 확인(needResponse) + 3회 재시도(300ms 증분 대기)로 플랩 사이를 건너뛴다.
+      // 최종 실패는 던져서 UI가 토스트로 알리게 한다.
+      let lastErr: unknown
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await withTimeout(server.remoteFunction('updateRoomState', [patch], { needResponse: true }), timeoutMs)
+          return
+        } catch (e) {
+          lastErr = e
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
+        }
+      }
+      console.warn('[net] updateRoomState failed after retries:', lastErr)
+      throw lastErr
     },
     send(event: string, payload: unknown, hot?: boolean) {
       if (t.status !== 'online' || !server || !roomKey) return
