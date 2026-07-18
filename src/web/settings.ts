@@ -9,6 +9,8 @@ export interface GameSettings {
   muted: boolean
   // UI 언어. 저장값이 없으면(구버전 호환) undefined — 부팅 시 detectLang()으로 자동감지한다(스펙 §i18n).
   lang?: Lang
+  // 내 총만 주황색 하이라이트(순수 로컬 렌더 옵션 — 다른 플레이어에겐 안 보임). 기본 off.
+  highlightMyGun?: boolean
 }
 
 export const DEFAULT_SETTINGS: GameSettings = { sfxVolume: 80, muted: false }
@@ -35,6 +37,7 @@ export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): 
     const out: GameSettings = { sfxVolume: clamp(Math.round(o.sfxVolume), 0, 100), muted: o.muted }
     // lang은 옵셔널 — 유효 코드일 때만 실어 보낸다. 없거나 이상값이면 undefined로 두고 부팅이 자동감지.
     if (typeof o.lang === 'string' && LANG_CODES.includes(o.lang)) out.lang = o.lang as Lang
+    if (typeof o.highlightMyGun === 'boolean') out.highlightMyGun = o.highlightMyGun
     return out
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -47,4 +50,12 @@ export function saveSettings(s: GameSettings, storage: Pick<Storage, 'setItem'> 
   } catch {
     // 스토리지 불가(사파리 프라이빗 등) — 설정은 세션 한정으로 동작
   }
+  cached = { ...s } // 렌더 루프용 캐시 갱신 — 인게임 ESC 설정 변경이 즉시 반영되게
+}
+
+// 매 프레임 읽기용 캐시 게터 — loadSettings의 JSON 파싱/가드를 60fps로 돌리지 않기 위함.
+// saveSettings가 캐시를 갱신하므로 설정 변경은 즉시 반영된다.
+let cached: GameSettings | null = null
+export function getCachedSettings(): GameSettings {
+  return cached ?? (cached = loadSettings())
 }

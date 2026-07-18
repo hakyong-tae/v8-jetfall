@@ -16,6 +16,10 @@ import { loadTexture } from './assets'
 import { weaponNumToIndex, guns, AK74, EAGLE, FLAMER } from '../core/weapons'
 import { MAX_SPRITES } from '../core/sprites'
 import { GAMESTYLE_CTF, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
+import { getCachedSettings } from './settings'
+
+// "내 총 하이라이트" 옵션의 틴트 색 — 어두운 맵에서도 또렷한 주황.
+const MY_GUN_TINT = 0xff8c1a
 
 // 색상 슬롯 (GostekGraphics.pas:23-29). 플레이어별 색이 없을 때의 폴백 팔레트.
 // 실제 렌더 색은 gs.sprite[i].player.{shirtColor,pantsColor,skinColor,hairColor}에서 읽는다(T13).
@@ -186,7 +190,9 @@ export class GostekRenderer {
   }
 
   // RenderGostek(GostekGraphics.pas:181-455)의 기본 몸체 경로
-  update(gs: GameState, spriteIndex: number): void {
+  // weaponTint: 손 무기 스프라이트 틴트 — 기본 흰색(무틴트). "내 총 하이라이트" 옵션이
+  // 로컬 플레이어에게만 주황을 넘긴다(순수 로컬 렌더 — 네트워크로 안 나감).
+  update(gs: GameState, spriteIndex: number, weaponTint: number = GOSTEK_COLORS.none): void {
     const soldier = gs.sprite[spriteIndex]
     if (!soldier.active) {
       this.container.visible = false
@@ -251,6 +257,7 @@ export class GostekRenderer {
     }
 
     this.updateHeadgear(gs, spriteIndex, team, mainCol)
+    this.weaponSprite.tint = weaponTint
     this.updateWeapon(gs, spriteIndex)
   }
 
@@ -367,7 +374,8 @@ export class GostekPool {
         this.container.addChild(r.container)
         this.renderers[i] = r
       }
-      r.update(gs, i)
+      // "내 총 하이라이트" 옵션 — 내 무기만 주황 틴트 (로컬 화면 전용, 남에겐 안 보임)
+      r.update(gs, i, i === me && getCachedSettings().highlightMyGun ? MY_GUN_TINT : GOSTEK_COLORS.none)
     }
 
     // 자기 표시: 로컬 병사 머리(pos[12]) 약간 위에 삼각형을 띄운다.

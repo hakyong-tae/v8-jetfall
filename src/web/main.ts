@@ -368,6 +368,8 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
     input,
     app,
     loadout,
+    gostek, // dev 검증용 — 렌더러 틴트 등 시각 상태 직접 조회
+
     // rAF 스로틀 환경(헤드리스 프리뷰)용 수동 스텝퍼. focusNum을 주면 그 스프라이트를 카메라가
     // 따라가고(없으면 로컬 me), 라이브 틱과 동일하게 world/bgLayer 위치까지 세팅해 완전한 프레임을
     // 렌더한다(프로모 영상 캡처·눈검증용).

@@ -127,6 +127,10 @@ export function buildSettingsPanel(
         <input class="jf-check" id="jf-mute" type="checkbox" ${s.muted ? 'checked' : ''} />
       </div>
       <div class="jf-row">
+        <span class="jf-label">${t('settings.highlightMyGun')}</span>
+        <input class="jf-check" id="jf-mygun" type="checkbox" ${s.highlightMyGun ? 'checked' : ''} />
+      </div>
+      <div class="jf-row">
         <span class="jf-label">${t('settings.language')}</span>
         <select class="jf-input" id="jf-lang">${langOptions}</select>
       </div>
@@ -143,14 +147,16 @@ export function buildSettingsPanel(
     const volVal = panel.querySelector('#jf-vol-val') as HTMLElement
     const mute = panel.querySelector('#jf-mute') as HTMLInputElement
     const lang = panel.querySelector('#jf-lang') as HTMLSelectElement
+    const mygun = panel.querySelector('#jf-mygun') as HTMLInputElement
     const commit = (): void => {
-      const next: GameSettings = { sfxVolume: Number(vol.value), muted: mute.checked, lang: getLang() }
+      const next: GameSettings = { sfxVolume: Number(vol.value), muted: mute.checked, lang: getLang(), highlightMyGun: mygun.checked }
       volVal.textContent = vol.value
       saveSettings(next)
       onChange?.(next)
     }
     vol.addEventListener('input', commit)
     mute.addEventListener('change', commit)
+    mygun.addEventListener('change', commit)
     lang.addEventListener('change', () => {
       setLang(lang.value as import('../i18n').Lang)
       if (onLangChange) onLangChange() // 설정 화면: 제목 포함 전체 재렌더
