@@ -10,6 +10,7 @@ import {
   createTPlayer,
   randomizeStart,
   addBotPlayer,
+  MAX_SPRITES,
   type BotConfigEntry,
 } from '../core/sprites'
 import { createWeapons, loadWeaponsConfig, guns, PRIMARY_WEAPONS, NOWEAPON, type WeaponsIniConfig } from '../core/weapons'
@@ -44,6 +45,8 @@ import { injectTheme } from './lobby/ui-theme'
 import { loadSettings } from './settings'
 import { t, initLang } from './i18n'
 import { initAds, showInterstitial, showRewarded, makeRoundEndWatcher } from './ads'
+import { BOOST_CHARGES, BOOST_DIVISOR, BOOST_MIN_WAIT_TICKS } from '../net/respawn-boost'
+import { ROOM_CAP } from '../net/dropin'
 import { HostSession, type HostSessionPlayer } from '../net/host-session'
 import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
@@ -282,34 +285,69 @@ function attachEscMenu(
   return { paused: () => o.pausable && overlay !== null, dispose }
 }
 
-// 광고 배치 #3: 리워드 광고로 사망 대기 스킵. 사망 대기 1.5초+ 남았을 때만 노출되는 DOM 버튼
-// (봇전·멀티 공용 — onSkip이 권위 경로를 고른다: 로컬 직접 / 클라→호스트 요청).
-function attachRespawnSkipButton(getWaitTicks: () => number, onSkip: () => void): { update: () => void; dispose: () => void } {
+// 리워드 광고: 리스폰 부스트. 사망 대기 중 + 방 리스폰 대기가 의미있을 때(BOOST_MIN_WAIT_TICKS↑)만
+// 노출되는 DOM 버튼. 완주 시 onReward가 권위 경로를 고른다(봇전 로컬 / 클라→호스트 요청).
+// getState: 현재 리스폰 대기 틱 + 방 리스폰 설정 틱을 돌려줘 노출 여부·헛소모 방지 판정.
+function attachRespawnBoostButton(
+  getState: () => { waitTicks: number; roomRespawnTicks: number },
+  onReward: () => void,
+): { update: () => void; dispose: () => void } {
   const btn = document.createElement('button')
   btn.className = 'jf-btn jf-btn-primary'
-  btn.style.cssText = 'position:fixed;left:50%;bottom:16%;transform:translateX(-50%);z-index:40;display:none'
-  btn.textContent = `▶ ${t('ad.skipRespawn')}`
+  btn.style.cssText = 'position:fixed;left:50%;bottom:14%;transform:translateX(-50%);z-index:40;display:none'
+  btn.textContent = `▶ ${t('ad.boostRespawn').replace('{n}', String(BOOST_CHARGES))}`
   let pending = false
   btn.addEventListener('click', () => {
     if (pending) return
     pending = true
-    void showRewarded('respawn-skip').then((ok) => { pending = false; if (ok) onSkip() })
+    void showRewarded('respawn-boost').then((ok) => { pending = false; if (ok) onReward() })
   })
   document.body.appendChild(btn)
   return {
-    update: () => { btn.style.display = getWaitTicks() > 90 ? '' : 'none' },
+    update: () => {
+      const { waitTicks, roomRespawnTicks } = getState()
+      // 죽어서 대기 중(waitTicks>0) + 방 리스폰이 부스트할 가치가 있을 때(≥임계)만 노출.
+      btn.style.display = waitTicks > 0 && roomRespawnTicks >= BOOST_MIN_WAIT_TICKS ? '' : 'none'
+    },
     dispose: () => btn.remove(),
   }
 }
 
+// 오프라인 리스폰 부스트 — 호스트 tickRespawnBoost의 로컬(1인 시뮬) 판. updateFrame "전"에 tick().
+function makeOfflineBoost(gs: GameState, getMe: () => number) {
+  let remaining = 0
+  let wasDead = false
+  return {
+    grant: () => { remaining = Math.min(BOOST_CHARGES * 2, remaining + BOOST_CHARGES) },
+    remaining: () => remaining,
+    tick: () => {
+      const s = gs.sprite[getMe()]
+      if (remaining <= 0 || !s?.active) { wasDead = s?.deadMeat ?? false; return }
+      if (s.deadMeat) {
+        const target = Math.max(1, Math.floor(gs.svRespawntime / BOOST_DIVISOR))
+        if (s.respawnCounter > target) s.respawnCounter = target
+      } else if (wasDead) {
+        remaining = Math.max(0, remaining - 1) // 방금 리스폰 — 1회 소비
+      }
+      wasDead = s.deadMeat
+    },
+  }
+}
+
+// 활성 전투원 수(병사+봇) — 좌상단 인원 표시용.
+function countActive(gs: GameState): number {
+  let n = 0
+  for (let i = 1; i <= MAX_SPRITES; i++) if (gs.sprite[i]?.active) n++
+  return n
+}
+
 async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: RoomSettings, botCount: number = NUM_BOTS): Promise<void> {
-  // 광고 배치 #2: 봇전 시작 전 인터스티셜 — 오프라인이라 대기 인원이 없어 무해.
-  // (멀티 시작 전엔 넣지 않는다 — 다른 플레이어가 기다림.)
-  await showInterstitial('botmatch-start')
+  // (봇전 시작 인터스티셜 제거 — 진입 즉시 광고가 이탈을 유발한다는 피드백. 수익은 라운드
+  //  종료 인터스티셜 + 리스폰 부스트 리워드로 확보.)
   // ── 게임모드 — 메뉴 인자 우선, 없으면 URL ?mode=ctf 호환(개발 경로)
   const params = new URLSearchParams(window.location.search)
   const ctf = mode ? mode === 'ctf' : params.get('mode') === 'ctf'
-  const { gs, manifest, mapFile } = await loadGameAssets(ctf, mapKey, settings?.respawnSeconds)
+  const { gs, manifest, mapFile, mapKey: resolvedMapKey } = await loadGameAssets(ctf, mapKey, settings?.respawnSeconds)
   // 봇전 상세설정 — 멀티 방과 동일 적용기(무기 토글/목표/시간/리스폰). 미지정(폴백/개발 직행)이면
   // loadGameAssets의 기본값 유지(DM 킬리밋 9999 = 소크용).
   if (settings) applyMatchSettings(gs, settings)
@@ -347,13 +385,14 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
   // ── PIXI 씬 구성 (봇전/네트전 공용)
   const { app, world, bgLayer, gostek, entities, hud, sound, input, camera } = await buildScene(gs, mapFile, manifest)
 
-  // ── 디버그 오버레이
+  // ── 디버그 오버레이(FPS/pos/jets) — dev 전용. 프로덕션에선 좌상단을 매치 정보 패널이 쓴다.
   const debug = new Text({
     text: '',
     style: { fill: 0xffffff, fontSize: 12, fontFamily: 'monospace' },
   })
   debug.position.set(8, 8)
-  app.stage.addChild(debug)
+  debug.visible = import.meta.env.DEV
+  if (import.meta.env.DEV) app.stage.addChild(debug)
 
   const spr = gs.sprite[me]
 
@@ -396,12 +435,14 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
     },
   }
 
+  // ── 리스폰 부스트(오프라인 로컬) — 광고 완주 시 잔여 충전, 죽을 때마다 리스폰 절반+1회 차감.
+  const boost = makeOfflineBoost(gs, () => me)
+  const skipBtn = attachRespawnBoostButton(
+    () => ({ waitTicks: gs.sprite[me]?.deadMeat ? gs.sprite[me].respawnCounter : 0, roomRespawnTicks: gs.svRespawntime }),
+    () => boost.grant(),
+  )
   // ── ESC 오버레이 — 오프라인 봇전은 pausable(시뮬 일시정지). onLeave: 로드아웃 핫키 리스너 해제
   // (안 하면 메뉴로 나갔다 재입장할 때 window keydown 리스너가 중첩된다).
-  const skipBtn = attachRespawnSkipButton(
-    () => (gs.sprite[me]?.deadMeat ? gs.sprite[me].respawnCounter : 0),
-    () => { const s = gs.sprite[me]; if (s?.deadMeat && s.respawnCounter > 1) s.respawnCounter = 1 },
-  )
   const roundEndAd = makeRoundEndWatcher(() => void showInterstitial('round-end')) // 광고 배치 #1
   const esc = attachEscMenu(app, sound, { pausable: true, onLeave: () => { disposeLoadoutHotkeys(); skipBtn.dispose() } })
 
@@ -416,6 +457,7 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
       input.applyTo(spr.control, camera.x, camera.y, app.screen.width, app.screen.height)
       applySlotSwitch(spr.control, gs, me, input.consumeSlotSwitch()) // M7: 1/2 무기전환
+      boost.tick() // 리스폰 부스트 — updateFrame이 respawnCounter를 감소시키기 전에 클램프
       updateFrame(gs)
       acc -= TICK_MS
       ticks++
@@ -427,6 +469,8 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
     entities.update(gs)
     hud.update(gs, me, app.screen.width, app.screen.height)
     hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
+    hud.setMatchInfo({ mapKey: resolvedMapKey, playerCount: countActive(gs) }) // 좌상단 상시 패널(봇전=방없음)
+    hud.setRespawnStatus(gs.sprite[me]?.deadMeat ? gs.sprite[me].respawnCounter : 0, boost.remaining())
     skipBtn.update()
     roundEndAd(gs.mapChangeCounter)
 
@@ -440,11 +484,13 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
     world.position.set(app.screen.width / 2 - camera.x, app.screen.height / 2 - camera.y)
     bgLayer.position.set(app.screen.width / 2, app.screen.height / 2 - camera.y)
 
-    debug.text =
-      `FPS ${ticker.FPS.toFixed(0)}\n` +
-      `pos ${px.toFixed(1)}, ${py.toFixed(1)}\n` +
-      `onGround ${spr.onGround}\n` +
-      `jets ${spr.jetsCount}`
+    if (debug.visible) {
+      debug.text =
+        `FPS ${ticker.FPS.toFixed(0)}\n` +
+        `pos ${px.toFixed(1)}, ${py.toFixed(1)}\n` +
+        `onGround ${spr.onGround}\n` +
+        `jets ${spr.jetsCount}`
+    }
   })
 }
 
@@ -457,7 +503,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   // loadGameAssets(ctf)를 mapKey 없이 불러 각 클라가 각자 랜덤 맵을 뽑았다(충돌 지오메트리
   // 디싱크 — M5 이후 잠복). settings 없는 옛 방은 merge가 기본값으로 폴백(안전).
   const settings = mergeRoomSettings(a.lobby.roomState.settings)
-  const { gs, manifest, mapFile } = await loadGameAssets(ctf, settings.mapKey)
+  const { gs, manifest, mapFile, mapKey: netMapKey } = await loadGameAssets(ctf, settings.mapKey)
   // 리스폰/무기제한/킬·시간제한은 여기 한 곳에서만 반영(호스트/클라 동일 경로 → 동일 세팅).
   // loadGameAssets의 respawnSeconds 인자는 일부러 안 쓴다 — 이중 적용 방지.
   applyMatchSettings(gs, settings)
@@ -600,14 +646,17 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     get myNum() { return myNum },
   }
 
-  // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈 + 로드아웃 핫키 해제.
-  const skipBtn = attachRespawnSkipButton(
-    () => (myNum >= 0 && gs.sprite[myNum]?.deadMeat ? gs.sprite[myNum].respawnCounter : 0),
+  // ── 리스폰 부스트(멀티) — 호스트는 자기 권위로 직접 충전, 클라는 호스트에 요청(+로컬 예측 표시).
+  const skipBtn = attachRespawnBoostButton(
+    () => ({ waitTicks: myNum >= 0 && gs.sprite[myNum]?.deadMeat ? gs.sprite[myNum].respawnCounter : 0, roomRespawnTicks: gs.svRespawntime }),
     () => {
-      if (isHost) hostSession?.applyRespawnSkip(account) // 호스트 = 권위 직접 적용
-      else clientSession?.requestRespawnSkip() // 클라 = 호스트 요청(+로컬 예측)
+      if (isHost) hostSession?.applyRespawnBoost(account, BOOST_CHARGES)
+      else clientSession?.requestRespawnBoost()
     },
   )
+  // HUD 부스트 잔여 표시용 — 호스트/클라 각자 자기 카운트를 읽는다.
+  const myBoostRemaining = (): number => (isHost ? (hostSession?.boostOf(account) ?? 0) : (clientSession?.boostRemaining ?? 0))
+  // ── ESC 오버레이 — 네트 매치는 시뮬 계속(공정성), 오버레이만. LEAVE 시 룸 이탈 + 로드아웃 핫키 해제.
   const roundEndAd = makeRoundEndWatcher(() => void showInterstitial('round-end')) // 광고 배치 #1
   const esc = attachEscMenu(app, sound, {
     pausable: false,
@@ -650,7 +699,9 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     entities.update(gs)
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
-      hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum, roomLabel: a.lobby.roomKey ?? undefined }) // M5+핑+방이름
+      hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum }) // M5+핑 (방 이름은 좌상단 패널로 이동)
+      hud.setMatchInfo({ mapKey: netMapKey, playerCount: Object.keys(a.lobby.players).length, cap: ROOM_CAP, roomLabel: a.lobby.roomKey ?? undefined })
+      hud.setRespawnStatus(gs.sprite[myNum]?.deadMeat ? gs.sprite[myNum].respawnCounter : 0, myBoostRemaining())
       skipBtn.update()
       roundEndAd(gs.mapChangeCounter)
       // 스코어보드는 hud.update가 이미 gs.teamScore/kills를 읽어 그린다(스냅샷이 그 값을 덮어씀).

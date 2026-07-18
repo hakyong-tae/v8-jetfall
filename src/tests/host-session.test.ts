@@ -172,6 +172,60 @@ describe('HostSession', () => {
     expect(gs.sprite[aliceNum].player!.kills).toBe(1)
   })
 
+  // 리워드 리스폰 부스트 — 죽어서 대기 중인 부스트 플레이어의 respawnCounter를 절반으로 클램프하고,
+  // 실제 리스폰 시 잔여 1회를 차감한다.
+  it('respawn boost halves the wait and consumes one charge on respawn', async () => {
+    const hub = new LoopbackHub()
+    const hostT = hub.createTransport('host')
+    hostT.connect(); hostT.joinRoom('r')
+    const gs = setupTestGame({ emptyMap: true })
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    gs.svRespawntime = 360 // 6초
+    const host = new HostSession(hostT, gs)
+    host.spawnPlayers([{ account: 'alice', team: TEAM_NONE }, { account: 'bob', team: TEAM_NONE }])
+    const aliceNum = host.spriteNumOf('alice')!
+    const bobNum = host.spriteNumOf('bob')!
+
+    gs.sprite[bobNum].healthHit(9999, aliceNum, 1, 0, { x: 0, y: 0 } as any) // bob 즉사
+    host.tick()
+    expect(gs.sprite[bobNum].deadMeat).toBe(true)
+    expect(gs.sprite[bobNum].respawnCounter).toBeGreaterThan(180) // 부스트 없음 → 절반 위
+
+    host.applyRespawnBoost('bob', 5)
+    host.tick()
+    expect(gs.sprite[bobNum].respawnCounter).toBeLessThanOrEqual(180) // 절반으로 클램프됨
+    expect(host.boostOf('bob')).toBe(5) // 아직 리스폰 전 → 미차감
+
+    // 리스폰까지 진행(절반이라 ~180틱). 부스트 없었으면 360틱이 걸렸을 것.
+    let respawnedAt = -1
+    for (let i = 2; i < 400 && respawnedAt < 0; i++) {
+      host.tick()
+      if (!gs.sprite[bobNum].deadMeat) respawnedAt = i
+    }
+    expect(respawnedAt).toBeGreaterThan(0)
+    expect(respawnedAt).toBeLessThan(360) // 부스트로 원래 대기(360)보다 빨리 부활
+    host.tick() // 차감은 리스폰 "다음" 틱에 관측됨(전이 감지가 updateFrame을 사이에 두므로)
+    expect(host.boostOf('bob')).toBe(4) // 리스폰 1회 소비 → 5→4
+  })
+
+  it('respawn boost is ignored for a player with no charges (no clamp)', async () => {
+    const hub = new LoopbackHub()
+    const hostT = hub.createTransport('host')
+    hostT.connect(); hostT.joinRoom('r')
+    const gs = setupTestGame({ emptyMap: true })
+    gs.svGamemode = GAMESTYLE_DEATHMATCH
+    gs.svRespawntime = 360
+    const host = new HostSession(hostT, gs)
+    host.spawnPlayers([{ account: 'alice', team: TEAM_NONE }, { account: 'bob', team: TEAM_NONE }])
+    const bobNum = host.spriteNumOf('bob')!
+    gs.sprite[bobNum].healthHit(9999, host.spriteNumOf('alice')!, 1, 0, { x: 0, y: 0 } as any)
+    host.tick()
+    const before = gs.sprite[bobNum].respawnCounter
+    host.tick() // 부스트 미충전 — 클램프 없음(자연 감소만)
+    expect(gs.sprite[bobNum].respawnCounter).toBeGreaterThan(180)
+    expect(gs.sprite[bobNum].respawnCounter).toBeLessThan(before) // 그냥 1틱 감소
+  })
+
   it('CTF: core auto-spawns both flags, and a scripted score increment broadcasts teamScore via SNAPSHOT', async () => {
     const hub = new LoopbackHub()
     const hostT = hub.createTransport('host')

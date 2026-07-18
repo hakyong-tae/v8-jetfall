@@ -14,6 +14,7 @@ import { weaponNumToIndex, NOWEAPON_NUM } from '../core/weapons'
 import { createBullet } from '../core/bullets'
 import { createThing } from '../core/things'
 import { applyPlayerColors } from './player-palette'
+import { BOOST_CHARGES } from './respawn-boost'
 import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
 
@@ -103,14 +104,20 @@ export class ClientSession {
   }
   stopPingSampling(): void { if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null } }
 
-  // 리워드 광고 보상: 사망 대기 스킵 요청 — 호스트가 deadMeat 검증 후 반영. 로컬 예측으로
-  // 내 카운터도 당겨 체감 즉각(스냅샷이 곧 권위값으로 덮음 — 예측 실패해도 무해).
-  requestRespawnSkip(): void {
-    this.transport.send(MSG.RESPAWN_SKIP, {})
-    if (this.myNum !== null) {
-      const spr = this.gs.sprite[this.myNum]
-      if (spr?.active && spr.deadMeat && spr.respawnCounter > 1) spr.respawnCounter = 1
-    }
+  // 리워드 광고 보상: 리스폰 부스트 N회 충전 요청 — 호스트가 계정별 기록 후 사망시마다 적용.
+  // 표시용 잔여 카운트는 클라가 로컬 예측(호스트가 진실, 표시는 코스메틱).
+  boostRemaining = 0 // HUD 표시용 — 내 리스폰 부스트 잔여(예측)
+  private boostWasDead = false // 내 리스폰 전이 감지(로컬 차감)
+  requestRespawnBoost(): void {
+    this.transport.send(MSG.RESPAWN_BOOST, { charges: BOOST_CHARGES })
+    this.boostRemaining = Math.min(BOOST_CHARGES * 2, this.boostRemaining + BOOST_CHARGES)
+  }
+  // tick()에서 호출 — 내가 리스폰(deadMeat true→false)할 때 표시 카운트 1 차감(예측).
+  private tickBoostDisplay(): void {
+    if (this.myNum === null || this.boostRemaining <= 0) return
+    const dead = !!this.gs.sprite[this.myNum]?.deadMeat
+    if (this.boostWasDead && !dead) this.boostRemaining = Math.max(0, this.boostRemaining - 1)
+    this.boostWasDead = dead
   }
 
   // M5: 로컬 로드아웃(림보) 선택을 호스트로 전송 — 저빈도 JSON(ASSIGN/KILL과 동일 규약).
@@ -136,6 +143,7 @@ export class ClientSession {
         this.transport.send(MSG.INPUT, encodeInput({ seq: this.seq++, ...input }), true) // hot: throttle된 relayHot (호출캡 회피, 호스트는 최신 입력만 사용)
       }
     }
+    this.tickBoostDisplay() // 리스폰 부스트 표시 카운트(예측) — updateFrame이 deadMeat를 바꾸기 전에 전이 관찰
     updateFrame(this.gs)
   }
 

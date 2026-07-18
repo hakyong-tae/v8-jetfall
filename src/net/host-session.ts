@@ -16,6 +16,7 @@ import { vector2 } from '../core/vector'
 import { GAMESTYLE_CTF, OBJECT_ALPHA_FLAG, OBJECT_BRAVO_FLAG, TEAM_ALPHA, TEAM_BRAVO } from '../core/constants'
 import { pickAutoTeamFromTeams } from './dropin'
 import { applyPlayerColors } from './player-palette'
+import { BOOST_CHARGES, BOOST_DIVISOR } from './respawn-boost'
 
 export interface HostSessionPlayer { account: string; team: number; nick?: string }
 
@@ -41,6 +42,8 @@ export class HostSession {
   private bulletSeq = 0
   private prevKills = new Map<number, number>()   // sprite num → 직전 틱 kills
   private prevDeadMeat = new Map<number, boolean>() // sprite num → 직전 틱 deadMeat
+  private boostRemaining = new Map<string, number>() // account → 리스폰 부스트 잔여 횟수(리워드 광고)
+  private boostWasDead = new Map<string, boolean>() // account → 직전 틱 deadMeat(부스트 소비 감지)
 
   constructor(private transport: Transport, public readonly gs: GameState) {
     transport.onMessage((event, _payload, from) => {
@@ -51,22 +54,45 @@ export class HostSession {
       } else if (event === MSG.PING) {
         const p = (_payload as { ping?: number }).ping
         if (typeof p === 'number' && p >= 0) this.pingOf.set(from, Math.min(9999, Math.round(p)))
-      } else if (event === MSG.RESPAWN_SKIP) {
-        this.applyRespawnSkip(from)
+      } else if (event === MSG.RESPAWN_BOOST) {
+        this.applyRespawnBoost(from, (_payload as { charges?: number }).charges ?? 0)
       }
     })
   }
 
-  // 리워드 광고 보상: 사망 대기 스킵. 호스트가 권위 검증 — 실제로 죽어서 대기 중일 때만
-  // respawnCounter를 1로 당긴다(다음 틱에 코어 respawn() 경로가 정상 처리). 치트 불가:
-  // 살아있거나 카운터가 이미 짧으면 무시.
-  applyRespawnSkip(account: string): void {
-    const num = this.slotOf.get(account)
-    if (num === undefined) return
-    const spr = this.gs.sprite[num]
-    if (!spr?.active || !spr.deadMeat) return
-    if (spr.respawnCounter > 1) spr.respawnCounter = 1
+  // 리워드 광고 보상: 리스폰 부스트 N회 충전. 이후 그 플레이어가 죽어 대기할 때마다
+  // tickRespawnBoost가 respawnCounter를 절반으로 클램프 + 1회 차감(호스트 권위). 스팸 방어:
+  // 잔여를 상한(BOOST_CHARGES*2)으로 캡해 광고 반복으로 무한 누적하지 못하게 한다.
+  applyRespawnBoost(account: string, charges: number): void {
+    if (!this.slotOf.has(account) || !(charges > 0)) return
+    const prev = this.boostRemaining.get(account) ?? 0
+    this.boostRemaining.set(account, Math.min(BOOST_CHARGES * 2, prev + Math.floor(charges)))
   }
+
+  // 매 틱: 부스트 잔여가 있는 플레이어가 사망 대기 중이면 respawnCounter를 절반으로 클램프.
+  // 실제 리스폰(deadMeat true→false 전이)이 일어난 프레임에 1회 차감. tick()에서 호출.
+  private tickRespawnBoost(): void {
+    for (const [account, remaining] of this.boostRemaining) {
+      if (remaining <= 0) { this.boostRemaining.delete(account); this.boostWasDead.delete(account); continue }
+      const num = this.slotOf.get(account)
+      if (num === undefined) continue
+      const spr = this.gs.sprite[num]
+      if (!spr?.active) continue
+      const wasDead = this.boostWasDead.get(account) ?? false
+      if (spr.deadMeat) {
+        // 사망 대기 중 — 리스폰 대기를 절반으로 클램프(코어가 매 틱 감소시키는 값을 눌러줌).
+        const target = Math.max(1, Math.floor(this.gs.svRespawntime / BOOST_DIVISOR))
+        if (spr.respawnCounter > target) spr.respawnCounter = target
+      } else if (wasDead) {
+        // 방금 리스폰(부스트 소비) — 1회 차감.
+        this.boostRemaining.set(account, remaining - 1)
+      }
+      this.boostWasDead.set(account, spr.deadMeat)
+    }
+  }
+
+  // 스코어보드/HUD 표시용(호스트 자신) — 계정별 부스트 잔여.
+  boostOf(account: string): number { return this.boostRemaining.get(account) ?? 0 }
 
   // 스코어보드 표시용: sprite num → 릴레이 RTT(ms). 자기 것은 measureOwnPing이, 클라 것은
   // MSG.PING 보고가 채운다. ASSIGN 재방송(1s)에 실려 전 클라에 배포된다.
@@ -219,6 +245,7 @@ export class HostSession {
       this.lastAppliedSeq.set(num, input.seq)
     }
 
+    this.tickRespawnBoost() // 리워드 부스트 — updateFrame이 respawnCounter를 감소시키기 "전"에 클램프
     updateFrame(this.gs) // ← 탄환 생성·데미지·사망·리스폰·(CTF)깃발자동생성/캡처가 전부 이 안에서 일어남
 
     this.diffAndBroadcastBullets()  // 설계 결정 1

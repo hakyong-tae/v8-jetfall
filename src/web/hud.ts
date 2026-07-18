@@ -46,6 +46,9 @@ export class Hud {
   private readonly scoreboardBg = new Graphics()
   private readonly scoreboardTitle: Text
   private readonly scoreboardText: Text
+  private readonly matchInfoBg = new Graphics() // 좌상단 상시 패널 배경
+  private readonly matchInfoText: Text // 좌상단: 맵/인원/(온라인)방제목
+  private readonly respawnText: Text // 사망 대기 카운트다운 + 부스트 잔여
   private icons = new Map<string, Texture>()
   private screenW = 0
   private screenH = 0
@@ -74,18 +77,60 @@ export class Hud {
       text: '',
       style: { fill: 0xffffff, fontSize: 14, fontFamily: 'monospace', align: 'left', lineHeight: 20 },
     })
+    this.matchInfoText = new Text({
+      text: '',
+      style: { fill: 0xe8e6d8, fontSize: 13, fontFamily: 'monospace', align: 'left', lineHeight: 17 },
+    })
+    this.respawnText = new Text({
+      text: '',
+      style: { fill: 0xffffff, fontSize: 20, fontFamily: 'monospace', align: 'center', fontWeight: 'bold' },
+    })
+    this.respawnText.anchor.set(0.5, 0.5)
     this.scoreboardBg.visible = false
     this.scoreboardTitle.visible = false
     this.scoreboardText.visible = false
+    this.matchInfoBg.visible = false
+    this.matchInfoText.visible = false
+    this.respawnText.visible = false
     this.weaponIcon.anchor.set(1, 1)
     this.container.addChild(this.bars)
     this.container.addChild(this.weaponIcon)
     this.container.addChild(this.ammoText)
     this.container.addChild(this.topText)
     this.container.addChild(this.killFeedText)
+    this.container.addChild(this.matchInfoBg)
+    this.container.addChild(this.matchInfoText)
+    this.container.addChild(this.respawnText)
     this.container.addChild(this.scoreboardBg)
     this.container.addChild(this.scoreboardTitle)
     this.container.addChild(this.scoreboardText)
+  }
+
+  // 좌상단 상시 정보 패널 — 맵/인원/(온라인)방제목. 매 프레임 main.ts가 호출.
+  setMatchInfo(info: { mapKey: string; playerCount: number; cap?: number; roomLabel?: string } | null): void {
+    if (!info) { this.matchInfoBg.visible = false; this.matchInfoText.visible = false; return }
+    const lines = [`${t('sb.map')}  ${info.mapKey}`]
+    lines.push(`${t('sb.players')}  ${info.cap ? `${info.playerCount}/${info.cap}` : String(info.playerCount)}`)
+    if (info.roomLabel) lines.push(`${t('sb.room')}  ${info.roomLabel}`)
+    this.matchInfoText.text = lines.join('\n')
+    this.matchInfoText.position.set(12, 10)
+    const w = this.matchInfoText.width + 20
+    const h = this.matchInfoText.height + 14
+    this.matchInfoBg.clear()
+    this.matchInfoBg.rect(4, 4, w, h).fill({ color: 0x0a0a06, alpha: 0.55 })
+    this.matchInfoBg.visible = true
+    this.matchInfoText.visible = true
+  }
+
+  // 사망 대기 카운트다운 + 리스폰 부스트 잔여. waitTicks<=0 이면 숨김(생존 중).
+  setRespawnStatus(waitTicks: number, boostRemaining: number): void {
+    if (waitTicks <= 0) { this.respawnText.visible = false; return }
+    const secs = Math.ceil(waitTicks / 60)
+    let txt = t('hud.respawnIn').replace('{n}', String(secs))
+    if (boostRemaining > 0) txt += '\n' + t('hud.boostActive').replace('{n}', String(boostRemaining))
+    this.respawnText.text = txt
+    this.respawnText.position.set(this.screenW / 2, this.screenH * 0.24) // 상단 HUD 아래·로드아웃 메뉴 위
+    this.respawnText.visible = true
   }
 
   async load(manifest: Manifest): Promise<void> {
@@ -204,11 +249,10 @@ export class Hud {
     const fmtPing = (p?: number): string => (p === undefined || p < 0 ? '-' : String(p))
     const fmtKd = (k: number, d: number): string => (d === 0 ? (k > 0 ? k.toFixed(1) : '0.0') : (k / d).toFixed(1))
 
-    // 타이틀: 모드 + 목표 (CTF는 팀 스코어) + 방 이름(온라인). 남은 시간은 상단 HUD가 이미 표시.
-    const room = opts?.roomLabel ? `   ·   ${t('sb.room')} ${opts.roomLabel}` : ''
-    this.scoreboardTitle.text = (isCtf
+    // 타이틀: 모드 + 목표 (CTF는 팀 스코어). 방 이름은 좌상단 패널이 전담(타이틀 간결화).
+    this.scoreboardTitle.text = isCtf
       ? `CTF   Alpha ${gs.teamScore[TEAM_ALPHA]} : ${gs.teamScore[TEAM_BRAVO]} Bravo   (${t('sb.goal')} ${gs.svKilllimit})`
-      : `DEATHMATCH   ${t('sb.goal')} ${gs.svKilllimit} ${t('sb.kills')}`) + room
+      : `DEATHMATCH   ${t('sb.goal')} ${gs.svKilllimit} ${t('sb.kills')}`
 
     // 헤더 + 구분선 + 행 (모노스페이스 컬럼 — 핑은 우측 정렬 끝 열)
     const NAME_W = 15
@@ -255,7 +299,6 @@ export function weaponHasIcon(weaponNum: number): boolean {
 export interface ScoreboardOpts {
   pingOf?: (num: number) => number | undefined // 온라인 매치: sprite num → 릴레이 RTT ms
   myNum?: number // 내 스프라이트 번호 — 행 하이라이트
-  roomLabel?: string // 온라인 매치: 현재 방 이름(키) — 타이틀에 표시
 }
 
 export interface ScoreboardRow {
