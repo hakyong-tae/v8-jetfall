@@ -49,7 +49,7 @@ import { ClientSession, type LocalInput } from '../net/client-session'
 import { makeWsClientTransport } from '../net/ws-client-transport'
 import { decideMigration } from '../net/host-migration'
 import { attemptReconnect } from '../net/reconnect'
-import { mergeRoomSettings, applyMatchSettings } from '../net/room-settings'
+import { mergeRoomSettings, applyMatchSettings, type RoomSettings } from '../net/room-settings'
 // (session.ts는 이번 단계에서 main.ts가 직접 소비하지 않음 — §Task4 "독립 seam" 선택, §자체리뷰)
 import type { TControl } from '../core/sprites'
 import { LoadoutMenu } from './loadout-menu'
@@ -302,14 +302,17 @@ function attachRespawnSkipButton(getWaitTicks: () => number, onSkip: () => void)
   }
 }
 
-async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSeconds?: number): Promise<void> {
+async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: RoomSettings, botCount: number = NUM_BOTS): Promise<void> {
   // 광고 배치 #2: 봇전 시작 전 인터스티셜 — 오프라인이라 대기 인원이 없어 무해.
   // (멀티 시작 전엔 넣지 않는다 — 다른 플레이어가 기다림.)
   await showInterstitial('botmatch-start')
   // ── 게임모드 — 메뉴 인자 우선, 없으면 URL ?mode=ctf 호환(개발 경로)
   const params = new URLSearchParams(window.location.search)
   const ctf = mode ? mode === 'ctf' : params.get('mode') === 'ctf'
-  const { gs, manifest, mapFile } = await loadGameAssets(ctf, mapKey, respawnSeconds)
+  const { gs, manifest, mapFile } = await loadGameAssets(ctf, mapKey, settings?.respawnSeconds)
+  // 봇전 상세설정 — 멀티 방과 동일 적용기(무기 토글/목표/시간/리스폰). 미지정(폴백/개발 직행)이면
+  // loadGameAssets의 기본값 유지(DM 킬리밋 9999 = 소크용).
+  if (settings) applyMatchSettings(gs, settings)
 
   // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
   const playerTeam = ctf ? TEAM_ALPHA : TEAM_NONE
@@ -331,12 +334,12 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, respawnSecond
   const bots = (await (await fetch('/assets/bots.json')).json()) as Record<string, BotConfigEntry>
   const botNames = Object.keys(bots)
   if (ctf) {
-    for (let i = 0; i < NUM_BOTS; i++) {
+    for (let i = 0; i < botCount; i++) {
       const team = i % 2 === 0 ? TEAM_BRAVO : TEAM_ALPHA
       addBotPlayer(gs, bots[botNames[i % botNames.length]], team)
     }
   } else {
-    for (let i = 0; i < NUM_BOTS; i++) {
+    for (let i = 0; i < botCount; i++) {
       addBotPlayer(gs, bots[botNames[i % botNames.length]], TEAM_NONE)
     }
   }
@@ -755,7 +758,7 @@ function boot(): void {
       if (a.lobby.net.status === 'online') startNetMatch(a).catch(fail)
       else startBotMatch().catch(fail) // 미배포/오프라인 폴백
     },
-    onOfflineBots: (mode, mapKey, respawnSeconds) => { document.body.innerHTML = ''; startBotMatch(mode, mapKey, respawnSeconds).catch(fail) },
+    onOfflineBots: (mode, mapKey, settings, botCount) => { document.body.innerHTML = ''; startBotMatch(mode, mapKey, settings, botCount).catch(fail) },
     // 메뉴 화면에선 살아있는 SoundSystem이 없음 — 설정은 저장만 되고 인게임 진입 시 적용된다.
     // (인게임 ESC 설정은 attachEscMenu가 live sound에 즉시 반영)
   })

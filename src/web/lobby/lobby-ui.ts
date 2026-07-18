@@ -12,7 +12,7 @@ import {
 // M8: 방 설정 패널 — 무기명 표시(고유명사, i18n 비대상)용 guns + 그룹 경계 상수.
 // createWeaponsBase()는 로비 컨텍스트(매치 시작 전, loadGameAssets 미경유)에서 무기명을 채운다.
 import { guns, createWeaponsBase, EAGLE, PRIMARY_WEAPONS, MAIN_WEAPONS } from '../../core/weapons'
-import { mergeRoomSettings, canDisableWeapon } from '../../net/room-settings'
+import { mergeRoomSettings, canDisableWeapon, type RoomSettings } from '../../net/room-settings'
 // M9: 난입(drop-in) 순수 헬퍼 — 정원 게이트 + CTF 자동 팀배정(테스트 공유용 별도 모듈).
 import { canJoinRoom, pickAutoTeam } from '../../net/dropin'
 import { GAME_TITLE, GAME_VERSION, CREDITS_LINES } from '../brand'
@@ -27,7 +27,7 @@ export interface LobbyOpts {
   onStartMatch: (a: StartMatchArg) => void
   // mapKey 생략(undefined) = Random(모드에 맞는 후보 중 시드 없는 선택은 main.ts 담당). §M5 Task1
   // respawnSeconds: M7 — 매치별 리스폰 대기시간(초). 생략 시 코어 기본(6s) 유지.
-  onOfflineBots: (mode: 'dm' | 'ctf', mapKey?: string, respawnSeconds?: number) => void
+  onOfflineBots: (mode: 'dm' | 'ctf', mapKey: string | undefined, settings: RoomSettings, botCount: number) => void
   onSettingsChange?: (s: GameSettings) => void
 }
 
@@ -298,18 +298,44 @@ async function goOnline(ctx: Ctx): Promise<void> {
 }
 
 // ── offline 모드+맵 선택 소메뉴 (M5: 모드 토글은 화면 유지, 맵 리스트만 갱신) ────────
+// 봇전 설정 영속(멀티 방 설정과 동일 항목 + 봇 수). 파싱 실패는 기본값 폴백.
+const BOT_COUNT_OPTIONS = [1, 2, 3, 4, 6, 8]
+const OFFLINE_SETTINGS_KEY = 'jetfall.offline.v1'
+function loadOfflineSettings(): { settings: RoomSettings; botCount: number } {
+  try {
+    const raw = JSON.parse(localStorage.getItem(OFFLINE_SETTINGS_KEY) ?? '{}') as { settings?: unknown; botCount?: unknown }
+    const botCount = typeof raw.botCount === 'number' && BOT_COUNT_OPTIONS.includes(raw.botCount) ? raw.botCount : 4
+    return { settings: mergeRoomSettings(raw.settings), botCount }
+  } catch {
+    return { settings: mergeRoomSettings(undefined), botCount: 4 }
+  }
+}
+function saveOfflineSettings(settings: RoomSettings, botCount: number): void {
+  try { localStorage.setItem(OFFLINE_SETTINGS_KEY, JSON.stringify({ settings, botCount })) } catch { /* 세션 한정 */ }
+}
+
+// 봇전 설정 화면 — 멀티 방(renderRoom)과 같은 설정 UX(무기 토글/리스폰/목표/시간)를 로컬
+// RoomSettings 객체에 그대로 적용하고, 봇 수만 오프라인 전용으로 추가한다.
 function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
   scr.appendChild(el('h1', 'jf-logo jf-logo-sm', GAME_TITLE))
   scr.appendChild(el('p', 'jf-tagline', t('offline.header')))
 
   const panel = el('div', 'jf-panel')
-  panel.style.minWidth = 'min(460px, 92vw)'
+  panel.style.minWidth = 'min(560px, 92vw)'
+  panel.style.maxHeight = '86vh'
+  panel.style.overflowY = 'auto' // 설정 항목 확장으로 세로 길어짐 — 작은 화면 스크롤(방 화면과 동일)
   scr.appendChild(panel)
+
+  // 무기명(고유명사) — 방 화면과 동일 이유(loadGameAssets 이전이라 guns[]가 비어있을 수 있음).
+  if (guns[EAGLE]?.name === '') createWeaponsBase()
 
   let mode: 'dm' | 'ctf' = 'dm'
   let mapKey = loadLastMap() // 'random' 또는 저장된 맵 키
-  let respawnSeconds = loadLastRespawn() // M7: 리스폰 대기시간(초)
+  const persisted = loadOfflineSettings()
+  const s: RoomSettings = persisted.settings // 로컬 가변 — 멀티의 roomState.settings에 대응
+  let botCount = persisted.botCount
   let keysByMode: { dm: string[]; ctf: string[] } | null = null
+  const persist = (): void => saveOfflineSettings(s, botCount)
 
   const drawMapList = (): void => {
     const list = panel.querySelector('#jf-maplist') as HTMLElement | null
@@ -331,29 +357,62 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
   }
 
   const draw = (): void => {
+    const isCtf = mode === 'ctf'
+    // 방 화면(renderRoom)과 동일한 무기 토글 마크업 — jf-on = 사용 가능.
+    const wpnBtns = (from: number, to: number): string => {
+      let html = ''
+      for (let i = from; i < to; i++) {
+        html += `<button class="jf-btn ${s.weaponActive[i] === 1 ? 'jf-on' : ''}" data-wpn="${i}">${guns[i + 1]?.name || '#' + (i + 1)}</button>`
+      }
+      return html
+    }
     panel.innerHTML = `
       <div class="jf-row">
         <button class="jf-btn ${mode === 'dm' ? 'jf-btn-primary' : ''}" id="jf-mode-dm">${t('mode.dm')}</button>
         <button class="jf-btn ${mode === 'ctf' ? 'jf-btn-primary' : ''}" id="jf-mode-ctf">${t('mode.ctf')}</button>
       </div>
-      <div class="jf-label" style="margin-top:4px">${t('offline.respawnTime')}</div>
-      <div class="jf-row" id="jf-respawn">${RESPAWN_OPTIONS.map((s) => `
-        <button class="jf-btn ${s === respawnSeconds ? 'jf-on' : ''}" data-respawn="${s}">${s}s</button>
-      `).join('')}</div>
+      <div class="jf-label" style="margin-top:4px">${t('offline.bots')}</div>
+      <div class="jf-row">${BOT_COUNT_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === botCount ? 'jf-on' : ''}" data-bots="${v}">${v}</button>`).join('')}</div>
       <div class="jf-label" style="margin-top:4px">${t('offline.map')}</div>
       <div id="jf-maplist"></div>
+      <div class="jf-label">${t('room.weapons')} — ${t('loadout.primary')}</div>
+      <div class="jf-row" style="flex-wrap:wrap">${wpnBtns(0, PRIMARY_WEAPONS)}</div>
+      <div class="jf-label">${t('room.weapons')} — ${t('loadout.secondary')}</div>
+      <div class="jf-row" style="flex-wrap:wrap">${wpnBtns(PRIMARY_WEAPONS, MAIN_WEAPONS)}</div>
+      <div class="jf-label">${t('offline.respawnTime')}</div>
+      <div class="jf-row">${RESPAWN_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === s.respawnSeconds ? 'jf-on' : ''}" data-respawn="${v}">${v}s</button>`).join('')}</div>
+      <div class="jf-label">${isCtf ? t('room.capLimit') : t('room.killLimit')}</div>
+      <div class="jf-row">${KILL_LIMIT_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === s.killLimit ? 'jf-on' : ''}" data-kl="${v}">${v}</button>`).join('')}</div>
+      <div class="jf-label">${t('room.timeLimit')}</div>
+      <div class="jf-row">${TIME_LIMIT_OPTIONS.map((v) => `
+        <button class="jf-btn ${v === s.timeLimitMin ? 'jf-on' : ''}" data-tl="${v}">${v === 0 ? t('room.unlimited') : v + 'm'}</button>`).join('')}</div>
       <div class="jf-row" style="margin-top:6px">
         <button class="jf-btn jf-btn-primary" id="jf-start">${t('offline.start')}</button>
         <button class="jf-btn" id="jf-back">${t('common.back')}</button>
       </div>`
-    panel.querySelector('#jf-mode-dm')!.addEventListener('click', () => { mode = 'dm'; draw() })
-    panel.querySelector('#jf-mode-ctf')!.addEventListener('click', () => { mode = 'ctf'; draw() })
-    panel.querySelectorAll<HTMLButtonElement>('[data-respawn]').forEach((b) => {
-      b.addEventListener('click', () => { respawnSeconds = Number(b.dataset.respawn); saveLastRespawn(respawnSeconds); draw() })
-    })
+    panel.querySelector('#jf-mode-dm')!.addEventListener('click', () => { mode = 'dm'; draw(); drawMapList() })
+    panel.querySelector('#jf-mode-ctf')!.addEventListener('click', () => { mode = 'ctf'; draw(); drawMapList() })
+    panel.querySelectorAll<HTMLButtonElement>('[data-bots]').forEach((b) =>
+      b.addEventListener('click', () => { botCount = Number(b.dataset.bots); persist(); draw(); drawMapList() }))
+    panel.querySelectorAll<HTMLButtonElement>('[data-wpn]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const i = Number(b.dataset.wpn)
+        if (s.weaponActive[i] === 1 && !canDisableWeapon(s.weaponActive, i)) return // 그룹 최소 1종 가드(방 화면과 동일)
+        s.weaponActive[i] = s.weaponActive[i] === 1 ? 0 : 1
+        persist(); draw(); drawMapList()
+      }))
+    panel.querySelectorAll<HTMLButtonElement>('[data-respawn]').forEach((b) =>
+      b.addEventListener('click', () => { s.respawnSeconds = Number(b.dataset.respawn); saveLastRespawn(s.respawnSeconds); persist(); draw(); drawMapList() }))
+    panel.querySelectorAll<HTMLButtonElement>('[data-kl]').forEach((b) =>
+      b.addEventListener('click', () => { s.killLimit = Number(b.dataset.kl); persist(); draw(); drawMapList() }))
+    panel.querySelectorAll<HTMLButtonElement>('[data-tl]').forEach((b) =>
+      b.addEventListener('click', () => { s.timeLimitMin = Number(b.dataset.tl); persist(); draw(); drawMapList() }))
     panel.querySelector('#jf-start')!.addEventListener('click', () => {
       handoff(ctx)
-      ctx.opts.onOfflineBots(mode, mapKey === 'random' ? undefined : mapKey, respawnSeconds)
+      ctx.opts.onOfflineBots(mode, mapKey === 'random' ? undefined : mapKey, s, botCount)
     })
     panel.querySelector('#jf-back')!.addEventListener('click', () => show(ctx, 'menu'))
     drawMapList()
