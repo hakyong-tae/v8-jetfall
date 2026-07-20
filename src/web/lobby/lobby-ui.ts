@@ -16,7 +16,7 @@ import { mergeRoomSettings, canDisableWeapon, type RoomSettings } from '../../ne
 // M9: 난입(drop-in) 순수 헬퍼 — 정원 게이트 + CTF 자동 팀배정(테스트 공유용 별도 모듈).
 import { canJoinRoom, pickAutoTeam } from '../../net/dropin'
 import { GAME_TITLE, GAME_VERSION, CREDITS_LINES } from '../brand'
-import { loadSettings, saveSettings, type GameSettings } from '../settings'
+import { loadSettings, saveSettings, loadNick, saveNick, type GameSettings } from '../settings'
 import { loadManifest } from '../assets'
 import { injectTheme, showToast } from './ui-theme'
 import { t, LANGS, getLang, setLang } from '../i18n'
@@ -282,7 +282,7 @@ async function goOnline(ctx: Ctx): Promise<void> {
       // 로비/방 화면·설정 패널을 구동(단일 브라우저 한정 — 실멀티 아님).
       const loopback = new URLSearchParams(window.location.search).get('loopback') === '1'
       const transport = await makeTransport(loopback)
-      ctx.lc = new LobbyClient(transport, 'Soldier')
+      ctx.lc = new LobbyClient(transport, loadNick()) // 봇전·온라인 공용 영속 닉
     }
     const st = await ctx.lc.connect()
     if (st !== 'online') {
@@ -368,6 +368,10 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
     }
     panel.innerHTML = `
       <div class="jf-row">
+        <span class="jf-label">${t('common.nickname')}</span>
+        <input class="jf-input" id="jf-offline-nick" maxlength="14" value="${loadNick()}" />
+      </div>
+      <div class="jf-row">
         <button class="jf-btn ${mode === 'dm' ? 'jf-btn-primary' : ''}" id="jf-mode-dm">${t('mode.dm')}</button>
         <button class="jf-btn ${mode === 'ctf' ? 'jf-btn-primary' : ''}" id="jf-mode-ctf">${t('mode.ctf')}</button>
       </div>
@@ -393,6 +397,9 @@ function renderOfflinePick(ctx: Ctx, scr: HTMLElement): void {
         <button class="jf-btn jf-btn-primary" id="jf-start">${t('offline.start')}</button>
         <button class="jf-btn" id="jf-back">${t('common.back')}</button>
       </div>`
+    // 이름 입력 — 즉시 영속(startBotMatch가 loadNick()으로 읽어 내 캐릭터 이름/스코어보드에 사용).
+    // draw() 재구성 시 value=loadNick()으로 복원되므로 타이핑 중 다른 버튼을 눌러도 값 유지.
+    panel.querySelector('#jf-offline-nick')!.addEventListener('input', (e) => saveNick((e.target as HTMLInputElement).value))
     panel.querySelector('#jf-mode-dm')!.addEventListener('click', () => { mode = 'dm'; draw(); drawMapList() })
     panel.querySelector('#jf-mode-ctf')!.addEventListener('click', () => { mode = 'ctf'; draw(); drawMapList() })
     panel.querySelectorAll<HTMLButtonElement>('[data-bots]').forEach((b) =>
@@ -499,7 +506,7 @@ function renderLobby(ctx: Ctx, scr: HTMLElement): void {
   versionTag(scr)
 
   const nickInput = panel.querySelector('#jf-nick') as HTMLInputElement
-  nickInput.addEventListener('input', () => { lc.nick = nickInput.value.trim() || 'Soldier' })
+  nickInput.addEventListener('input', () => { lc.nick = nickInput.value.trim() || 'Soldier'; saveNick(nickInput.value) }) // 영속(봇전 공용)
 
   const tbody = panel.querySelector('#jf-rooms') as HTMLElement
   let rooms: { key: string; count: number; mode: number; started: boolean }[] = []

@@ -32,6 +32,10 @@ import {
   MAX_THINGS,
   MAX_SPARKS,
 } from '../core/sprites'
+import { getCachedSettings } from './settings'
+
+// "내 총알 주황색" 틴트 색 — gostek.ts의 MY_GUN_TINT와 동일(내 무기+총알 통일된 식별색).
+const MY_BULLET_TINT = 0xff8c1a
 import {
   BULLET_TIMEOUT,
   GRENADE_TIMEOUT,
@@ -229,8 +233,9 @@ export class BulletsRenderer {
     return s
   }
 
-  update(gs: GameState): void {
-    this.syncBullets(gs)
+  // localNum: 로컬 플레이어 스프라이트 번호(>0). 그가 쏜 탄환을 주황으로 틴트해 자기 총알 식별.
+  update(gs: GameState, localNum = -1): void {
+    this.syncBullets(gs, localNum)
     this.syncThings(gs)
     this.syncSparks(gs)
   }
@@ -271,7 +276,7 @@ export class BulletsRenderer {
   //   CLUSTERNADE(973-979)/CLUSTER(981-986)/THROWNKNIFE(1012-1022, knife 텍스처 스핀)/
   //   M2(1024-1055, SMUDGE 이중 트레일)/KNIFE·PUNCH(원본 케이스 없음 — 비표시가 원본이나
   //   가시성 위해 현행 유지). PingAdd 고스트(797-810)는 웹 클라 넷 보정 미구현으로 제외.
-  private syncBullets(gs: GameState): void {
+  private syncBullets(gs: GameState, localNum: number): void {
     for (let i = 1; i <= MAX_BULLETS; i++) {
       const b = gs.bullet[i]
       const s = this.slot(this.bulletSprites, i)
@@ -418,6 +423,13 @@ export class BulletsRenderer {
           s.alpha = 1
           break
         }
+      }
+
+      // "내 총알 주황색" — 내 스프라이트가 쏜 탄환/트레일을 주황 틴트(로컬 렌더 전용, 남에겐 안 보임).
+      // "내 총 하이라이트" 설정과 함께 켜진다(내 무기+총알 일관). 스타일별 틴트를 마지막에 덮어씀.
+      if (localNum > 0 && b.owner === localNum && getCachedSettings().highlightMyGun) {
+        if (s.visible) s.tint = MY_BULLET_TINT
+        if (tr.visible) tr.tint = MY_BULLET_TINT
       }
     }
   }

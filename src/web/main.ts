@@ -42,7 +42,7 @@ import { Camera } from './camera'
 import { mountLobby, buildSettingsPanel, type StartMatchArg } from './lobby/lobby-ui'
 import { GAME_TITLE, GAME_TAGLINE } from './brand'
 import { injectTheme } from './lobby/ui-theme'
-import { loadSettings } from './settings'
+import { loadSettings, loadNick } from './settings'
 import { t, initLang } from './i18n'
 import { initAds, showInterstitial, showRewarded, makeRoundEndWatcher } from './ads'
 import { BOOST_CHARGES, BOOST_DIVISOR, BOOST_MIN_WAIT_TICKS } from '../net/respawn-boost'
@@ -378,7 +378,7 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
   // ── 플레이어 1명 스폰 (CTF=alpha, DM=무팀)
   const playerTeam = ctf ? TEAM_ALPHA : TEAM_NONE
   const player = createTPlayer()
-  player.name = 'Web'
+  player.name = loadNick() // 봇전 내 캐릭터 이름 — 영속 닉(온라인과 공용). 스코어보드에 표시.
   player.team = playerTeam
   // 로컬 플레이어를 눈에 띄게 — DM에선 셔츠 청록(0x33ccff)으로 자기 병사 식별(CTF에선 팀색이 강제됨).
   player.shirtColor = 0x33ccff
@@ -434,6 +434,7 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
     app,
     loadout,
     gostek, // dev 검증용 — 렌더러 틴트 등 시각 상태 직접 조회
+    entities, // dev 검증용 — 총알 틴트 확인
 
     // rAF 스로틀 환경(헤드리스 프리뷰)용 수동 스텝퍼. focusNum을 주면 그 스프라이트를 카메라가
     // 따라가고(없으면 로컬 me), 라이브 틱과 동일하게 world/bgLayer 위치까지 세팅해 완전한 프레임을
@@ -447,9 +448,9 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
         loadout.poll()
       }
       gostek.update(gs, me)
-      entities.update(gs)
+      entities.update(gs, me) // me = 내 총알 주황 틴트 대상
       hud.update(gs, me, app.screen.width, app.screen.height)
-      hud.showScoreboard(gs, input.isTabHeld())
+      hud.showScoreboard(gs, input.isTabHeld(), { myNum: me }) // 봇전: 내 이름 행 하이라이트
       const fn = focusNum != null && gs.sprite[focusNum]?.active ? focusNum : me
       camera.update(gs.spriteParts.pos[fn].x, gs.spriteParts.pos[fn].y, input.mouseX, input.mouseY, app.screen.width, app.screen.height)
       world.position.set(app.screen.width / 2 - camera.x, app.screen.height / 2 - camera.y)
@@ -489,9 +490,9 @@ async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: Ro
 
     // ── 렌더 동기화 (맵/프롭은 정적, 병사·탄환·씽·HUD·카메라 갱신)
     gostek.update(gs, me)
-    entities.update(gs)
+    entities.update(gs, me) // me = 내 총알 주황 틴트 대상
     hud.update(gs, me, app.screen.width, app.screen.height)
-    hud.showScoreboard(gs, input.isTabHeld()) // M5: Tab 홀드 동안 스코어보드
+    hud.showScoreboard(gs, input.isTabHeld(), { myNum: me }) // M5+봇전: Tab 홀드 스코어보드, 내 이름 행 하이라이트
     hud.setMatchInfo({ mapKey: resolvedMapKey, playerCount: countActive(gs) }) // 좌상단 상시 패널(봇전=방없음)
     hud.setRespawnStatus(gs.sprite[me]?.deadMeat ? gs.sprite[me].respawnCounter : 0, boost.remaining())
     skipBtn.update()
@@ -726,7 +727,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     // ── 렌더 동기화 — GostekPool 무수정 재사용, .active 스프라이트 전부 렌더. (백그라운드면 rAF가
     //    멈춰 이 함수는 안 돌지만 simStep은 Worker로 계속 → 매치는 안 멈춘다.)
     gostek.update(gs, myNum)
-    entities.update(gs)
+    entities.update(gs, myNum) // myNum = 내 총알 주황 틴트 대상
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
       hud.showScoreboard(gs, input.isTabHeld(), { pingOf, myNum }) // M5+핑 (방 이름은 좌상단 패널로 이동)
@@ -802,7 +803,7 @@ async function startWsClientMatch(url: string, account: string, ctf: boolean): P
     }
     if (ticks === MAX_CATCHUP_TICKS) acc = 0
     gostek.update(gs, myNum)
-    entities.update(gs)
+    entities.update(gs, myNum) // myNum = 내 총알 주황 틴트 대상
     if (myNum >= 0) {
       hud.update(gs, myNum, app.screen.width, app.screen.height)
       hud.setKillFeed(gs, clientSession.killFeed)

@@ -59,3 +59,13 @@ let cached: GameSettings | null = null
 export function getCachedSettings(): GameSettings {
   return cached ?? (cached = loadSettings())
 }
+
+// 플레이어 닉네임 — 봇전·온라인 공용, 영속. 스코어보드/캐릭터 이름에 쓰인다. 최대 14자.
+const NICK_KEY = 'jetfall.nick.v1'
+export const DEFAULT_NICK = 'Soldier'
+export function loadNick(storage: Pick<Storage, 'getItem'> = localStorage): string {
+  try { return (storage.getItem(NICK_KEY) || DEFAULT_NICK).slice(0, 14) } catch { return DEFAULT_NICK }
+}
+export function saveNick(v: string, storage: Pick<Storage, 'setItem'> = localStorage): void {
+  try { storage.setItem(NICK_KEY, (v.trim() || DEFAULT_NICK).slice(0, 14)) } catch { /* 세션 한정 */ }
+}
