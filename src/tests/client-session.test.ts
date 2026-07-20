@@ -48,6 +48,35 @@ describe('ClientSession', () => {
     expect(gs.spriteParts.pos[5].x).toBeCloseTo(100, 0)
   })
 
+  // 렉 완화 회귀(2026-07-20): 자기 스프라이트는 ~1 RTT 뒤처진 스냅샷에 끌려가면 안 된다(고무줄).
+  // 로컬 예측이 앞서 있을 때(작은 오차) 스냅샷은 위치를 당기지 말고, 속도는 하드스냅이 아니라 lerp.
+  it('local sprite is NOT yanked back by a stale (behind) snapshot — no self rubber-band', async () => {
+    const hub = new LoopbackHub()
+    const t = hub.createTransport('alice')
+    t.connect(); t.joinRoom('r')
+    const gs = setupTestGame({ emptyMap: true })
+    const client = new ClientSession(t, gs, 'alice', () => neutralControl())
+    const hostT = hub.createTransport('host')
+    hostT.connect(); hostT.joinRoom('r')
+    hostT.send(MSG.ASSIGN, { account: 'alice', num: 3 })
+    const snap = (posX: number, velX: number) => encodeSnapshot({ tick: 1, teamScore1: 0, teamScore2: 0, sprites: [{
+      num: 3, team: 0, direction: 1, deadMeat: false, health: 150, jetsCount: 0,
+      legsAnimId: 1, legsFrame: 1, bodyAnimId: 1, bodyFrame: 1, lastInputSeq: 0,
+      posX, posY: 0, velX, velY: 0, kills: 0, deaths: 0, weaponNum: 3, control: neutralControl(),
+    }] })
+    hostT.send(MSG.SNAPSHOT, snap(100, 5)); await Promise.resolve()
+    expect(client.myNum).toBe(3)
+
+    // 로컬 예측이 앞서감(오차 20px < 임계 28px). 속도 5로 우이동 중.
+    gs.spriteParts.pos[3].x = 130
+    gs.spriteParts.velocity[3].x = 5
+    hostT.send(MSG.SNAPSHOT, snap(110, 2)); await Promise.resolve() // 뒤처진 스냅샷(x=110, vel=2)
+    // 위치는 임계 내이므로 당겨지지 않아야(고무줄 없음) — 예전엔 25%씩 뒤로 끌려 125가 됐다.
+    expect(gs.spriteParts.pos[3].x).toBe(130)
+    // 속도는 하드스냅(2) 금지 — lerp만: 5 + (2-5)*0.10 = 4.7
+    expect(gs.spriteParts.velocity[3].x).toBeGreaterThan(4)
+  })
+
   it("own sprite moves from local input; ASSIGN routes control writes to the right slot", async () => {
     const hub = new LoopbackHub()
     const t = hub.createTransport('alice')

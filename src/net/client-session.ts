@@ -18,8 +18,16 @@ import { BOOST_CHARGES } from './respawn-boost'
 import { updateFrame } from '../core/game'
 import { vector2 } from '../core/vector'
 
-const POS_CORRECTION_THRESHOLD = 8 // px — 스펙 §4.4 예시 임계
-const POS_CORRECTION_ALPHA = 0.25 // 스냅샷마다 잔여오차의 25%씩 당김(지수 스무딩, 안 튐)
+// 위치/속도 보정 상수 — 자기(로컬)와 원격을 분리한다(렉 완화, 넷코드 분석 2026-07-20).
+//  · 로컬(자기): 스냅샷은 ~1 RTT(실측 편도 200-320ms) 뒤처져 있어 그대로 당기면 "내 캐릭터
+//    고무줄"이 된다. 로컬 예측을 신뢰하고 큰 디싱크만 느슨히 당김 + 속도는 스냅 대신 소폭 lerp.
+//  · 원격: 순수 재생 — 촘촘한 데드존+빠른 pull + 방향 반전 시 즉시 스냅(반전 고무줄 제거).
+const REMOTE_POS_THRESHOLD = 3 // px — 원격 데드존(작게: 촘촘히 따라감)
+const REMOTE_POS_ALPHA = 0.35 // 원격 잔여오차 pull 비율
+const REMOTE_REVERSAL_VEL = 2 // px/tick — 원격 속도 반전/급변 감지 임계(초과 시 하드 스냅)
+const LOCAL_POS_THRESHOLD = 28 // px — 자기 스프라이트는 이만큼 벌어졌을 때만 보정(텔레포트/디싱크)
+const LOCAL_POS_ALPHA = 0.12 // 자기 위치 느슨한 당김(고무줄 방지)
+const LOCAL_VEL_ALPHA = 0.10 // 자기 속도는 스냅 금지 — 넉백 일부만 lerp로 반영
 // 렉 수정: 2틱(33ms)이면 relayHot throttle 50ms가 매 3번째 입력을 드롭해 호스트가 스테일
 // 입력을 불균일하게 재생(원격 시점에서 내 움직임이 덜컥). 3틱(50ms) = throttle 정렬 균일 20Hz.
 const INPUT_SEND_EVERY_N_TICKS = 3
@@ -42,6 +50,7 @@ export class ClientSession {
   private myAccount: string
   private prevDeadMeat = new Map<number, boolean>() // C단계 — 리스폰 즉시스냅 감지(설계 결정 5)
   private knownFlagSlot = new Map<number, number>() // C단계 — style → 현재 채택된 thingNum(설계 결정 4)
+  private prevHostVel = new Map<number, { x: number; y: number }>() // num → 직전 스냅 속도(원격 방향반전 스냅 감지)
 
   constructor(
     private transport: Transport,
@@ -201,6 +210,7 @@ export class ClientSession {
       if (this.gs.sprite[num]?.active) this.gs.sprite[num].kill()
       this.known.delete(num)
       this.prevDeadMeat.delete(num)
+      this.prevHostVel.delete(num)
       for (const [account, n] of [...this.knownSlots]) if (n === num) this.knownSlots.delete(account)
     }
   }
@@ -255,22 +265,40 @@ export class ClientSession {
       spr.deadMeat = s.deadMeat
       this.prevDeadMeat.set(s.num, s.deadMeat)
 
-      // 연속값(위치) — 임계 초과분의 일부만 당김(튐 방지). 속도는 호스트가 유일 권위 소스라 즉시 스냅.
+      // 연속값(위치/속도) 보정 — 자기(로컬)와 원격을 분리(렉 완화). 상수 주석 참조.
       const pos = this.gs.spriteParts.pos[s.num]
-      if (justRespawned) {
-        pos.x = s.posX
-        pos.y = s.posY
-      } else {
-        const ex = s.posX - pos.x
-        const ey = s.posY - pos.y
-        if (Math.hypot(ex, ey) > POS_CORRECTION_THRESHOLD) {
-          pos.x += ex * POS_CORRECTION_ALPHA
-          pos.y += ey * POS_CORRECTION_ALPHA
-        }
-      }
       const vel = this.gs.spriteParts.velocity[s.num]
-      vel.x = s.velX
-      vel.y = s.velY
+      const isLocal = s.num === this.myNum
+      if (justRespawned) {
+        // 리스폰은 자기/원격 모두 하드 스냅(호스트 RNG 스폰 지점).
+        pos.x = s.posX; pos.y = s.posY
+        vel.x = s.velX; vel.y = s.velY
+      } else if (isLocal) {
+        // 자기: 로컬 예측 신뢰. 큰 디싱크만 느슨히 당기고, 속도는 스냅 대신 소폭 lerp
+        // (스냅샷이 ~1 RTT 뒤처져 그대로 당기면 내 캐릭터가 고무줄처럼 뒤로 끌림).
+        const ex = s.posX - pos.x, ey = s.posY - pos.y
+        if (Math.hypot(ex, ey) > LOCAL_POS_THRESHOLD) {
+          pos.x += ex * LOCAL_POS_ALPHA; pos.y += ey * LOCAL_POS_ALPHA
+        }
+        vel.x += (s.velX - vel.x) * LOCAL_VEL_ALPHA
+        vel.y += (s.velY - vel.y) * LOCAL_VEL_ALPHA
+      } else {
+        // 원격: 순수 재생. 촘촘한 데드존+빠른 pull. 방향 반전/속도 급변 시 즉시 스냅(반전 고무줄 제거).
+        const ex = s.posX - pos.x, ey = s.posY - pos.y
+        const prev = this.prevHostVel.get(s.num)
+        const reversal = !!prev && (
+          (Math.sign(s.velX) !== Math.sign(prev.x) && Math.abs(s.velX) > REMOTE_REVERSAL_VEL) ||
+          (Math.sign(s.velY) !== Math.sign(prev.y) && Math.abs(s.velY) > REMOTE_REVERSAL_VEL) ||
+          Math.abs(s.velX - prev.x) > REMOTE_REVERSAL_VEL * 2 ||
+          Math.abs(s.velY - prev.y) > REMOTE_REVERSAL_VEL * 2
+        )
+        const alpha = reversal ? 1 : REMOTE_POS_ALPHA
+        if (Math.hypot(ex, ey) > REMOTE_POS_THRESHOLD) {
+          pos.x += ex * alpha; pos.y += ey * alpha
+        }
+        vel.x = s.velX; vel.y = s.velY // 원격 속도는 하드 스냅(순수 재생)
+        this.prevHostVel.set(s.num, { x: s.velX, y: s.velY })
+      }
     }
 
     for (const f of msg.flags ?? []) this.ensureFlagSynced(f) // C단계
