@@ -9,6 +9,7 @@
 // 카메라 기준 월드로 변환해 매 틱 덮어쓴다 (Control.pas:211-215의 관성 보정은
 // 원본에서도 입력 샘플링이 다시 덮어쓰는 값).
 import type { TControl } from '../core/sprites'
+import { getBindings, boundCodes } from './keybindings'
 
 // M7 Task4: "요청 슬롯 ≠ 현재 든 슬롯"일 때만 스왑(코어 changeWeapon 토글을 1회 엣지 발동).
 // 순수 함수로 분리해 단위테스트 가능하게 한다(코어 무수정, 값 비교만).
@@ -75,8 +76,8 @@ export class InputState {
   attach(target: HTMLElement): void {
     window.addEventListener('keydown', (e) => {
       this.noteKeyDown(e.code)
-      // 스크롤/포커스 이동 방지 (게임 키만)
-      if (['Space', 'Tab', 'KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(e.code)) e.preventDefault()
+      // 스크롤/포커스 이동 방지 — 현재 바인딩된 게임 키 + Tab(스코어보드).
+      if (boundCodes().has(e.code)) e.preventDefault()
     })
     window.addEventListener('keyup', (e) => this.noteKeyUp(e.code))
     window.addEventListener('blur', () => {
@@ -99,21 +100,22 @@ export class InputState {
 
   // 매 틱 TControl에 반영. cameraX/Y = 카메라 중심 월드좌표, screenW/H = 뷰포트 px.
   applyTo(control: TControl, cameraX: number, cameraY: number, screenW: number, screenH: number): void {
-    control.left = this.keys.has('KeyA')
-    control.right = this.keys.has('KeyD')
-    control.up = this.keys.has('KeyW') // +jump
-    control.down = this.keys.has('KeyS') // +crouch
-    control.prone = this.keys.has('KeyX')
-    control.jetpack = this.mouseButtons.has(2) // MOUSE3 = 우클릭
-    control.fire = !this.menuOpen && this.mouseButtons.has(0) // MOUSE1 — 로드아웃 메뉴 열림 중엔 억제
+    const b = getBindings() // 재설정 가능한 키 바인딩(settings 키 리바인딩 UI가 갱신)
+    control.left = this.keys.has(b.left)
+    control.right = this.keys.has(b.right)
+    control.up = this.keys.has(b.jump) // +jump
+    control.down = this.keys.has(b.crouch) // +crouch
+    control.prone = this.keys.has(b.prone)
+    control.jetpack = this.mouseButtons.has(2) // MOUSE3 = 우클릭(마우스 고정)
+    control.fire = !this.menuOpen && this.mouseButtons.has(0) // MOUSE1(마우스 고정) — 로드아웃 열림 중 억제
     // M7 Task4: Q의 코어 changeWeapon(주↔보조 토글 스왑) 매핑 제거. Q는 이제 무기창 전용
     // (loadout-menu.ts 자체 리스너). 무기전환은 1/2 직접선택 → main.ts가 슬롯 요청을 읽어
     // 필요한 틱에만 control.changeWeapon=true를 세팅한다. 여기선 항상 false로 초기화.
     control.changeWeapon = false
-    control.reload = this.keys.has('KeyR')
-    control.throwWeapon = this.keys.has('KeyF')
-    control.throwNade = this.keys.has('KeyE')
-    control.flagThrow = this.keys.has('Space')
+    control.reload = this.keys.has(b.reload)
+    control.throwWeapon = this.keys.has(b.dropWeapon)
+    control.throwNade = this.keys.has(b.grenade)
+    control.flagThrow = this.keys.has(b.flagThrow)
 
     // 스크린 → 월드 (줌 1 고정: 스크린 px = 월드 단위)
     control.mouseAimX = Math.round(cameraX + this.mouseX - screenW / 2)

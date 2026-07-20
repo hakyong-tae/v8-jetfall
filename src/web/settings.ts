@@ -13,7 +13,7 @@ export interface GameSettings {
   highlightMyGun?: boolean
 }
 
-export const DEFAULT_SETTINGS: GameSettings = { sfxVolume: 80, muted: false }
+export const DEFAULT_SETTINGS: GameSettings = { sfxVolume: 80, muted: false, highlightMyGun: true }
 
 // 유효 언어 코드 — i18n 문자열 테이블에 의존하지 않고(순환 회피) 인라인 검증.
 const LANG_CODES: readonly string[] = ['en', 'ko', 'zh', 'es', 'pt']
@@ -37,7 +37,8 @@ export function loadSettings(storage: Pick<Storage, 'getItem'> = localStorage): 
     const out: GameSettings = { sfxVolume: clamp(Math.round(o.sfxVolume), 0, 100), muted: o.muted }
     // lang은 옵셔널 — 유효 코드일 때만 실어 보낸다. 없거나 이상값이면 undefined로 두고 부팅이 자동감지.
     if (typeof o.lang === 'string' && LANG_CODES.includes(o.lang)) out.lang = o.lang as Lang
-    if (typeof o.highlightMyGun === 'boolean') out.highlightMyGun = o.highlightMyGun
+    // 내 무기·총알 하이라이트 — 기본값 ON. 저장값이 명시적 false일 때만 끈다(구버전/신규 사용자는 ON).
+    out.highlightMyGun = typeof o.highlightMyGun === 'boolean' ? o.highlightMyGun : true
     return out
   } catch {
     return { ...DEFAULT_SETTINGS }

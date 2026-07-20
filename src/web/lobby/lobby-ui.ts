@@ -19,7 +19,8 @@ import { GAME_TITLE, GAME_VERSION, CREDITS_LINES } from '../brand'
 import { loadSettings, saveSettings, loadNick, saveNick, type GameSettings } from '../settings'
 import { loadManifest } from '../assets'
 import { injectTheme, showToast } from './ui-theme'
-import { t, LANGS, getLang, setLang } from '../i18n'
+import { t, LANGS, getLang, setLang, type StringKey } from '../i18n'
+import { BINDABLE, getBindings, setBinding, resetBindings, keyLabel, type BindableAction } from '../keybindings'
 
 export interface StartMatchArg { lobby: LobbyClient; mode: number; myTeam: number }
 
@@ -83,21 +84,6 @@ export async function makeTransport(loopback: boolean): Promise<Transport> {
 }
 
 // ── 조작키 표 (읽기전용 — input.ts 기본 바인딩과 동일. 리바인딩은 후속)
-const CONTROLS: [string, string][] = [
-  ['A / D', '좌우 이동'],
-  ['W', '점프'],
-  ['S', '숙이기'],
-  ['X', '엎드리기'],
-  ['좌클릭', '발사'],
-  ['우클릭', '제트팩'],
-  ['R', '재장전'],
-  ['Q', '무기 교체'],
-  ['E', '수류탄'],
-  ['F', '무기 버리기'],
-  ['Space', '깃발 던지기'],
-  ['ESC', '메뉴 (인게임)'],
-]
-
 // ── 설정 패널 빌더 — 설정 화면과 인게임 ESC 오버레이가 공유 (plan Task4).
 // 변경 즉시 saveSettings + onChange 콜백. 반환 엘리먼트를 원하는 컨테이너에 붙이면 된다.
 // 언어 변경 시 자기 자신을 재렌더해 라벨이 즉시 반영된다(설정화면·ESC 오버레이 공용).
@@ -111,8 +97,19 @@ export function buildSettingsPanel(
   panel.style.display = 'flex'
   panel.style.flexDirection = 'column'
   panel.style.gap = '14px'
+  let capturing: BindableAction | null = null // 키 리바인딩 캡처 대상(없으면 null)
   const render = (): void => {
     const s = loadSettings()
+    const bindings = getBindings()
+    // 재설정 불가한 시스템 키(마우스/Tab/슬롯/무기창/ESC) — 표시만. [키표시, 설명 i18n키]
+    const staticRows: [string, StringKey][] = [
+      [t('settings.mouseLeft'), 'ctrl.fire'],
+      [t('settings.mouseRight'), 'ctrl.jetpack'],
+      ['Q', 'ctrl.weaponMenu'],
+      ['Tab', 'ctrl.scoreboard'],
+      ['1 / 2', 'ctrl.slots'],
+      ['Esc', 'ctrl.menu'],
+    ]
     const langOptions = LANGS.map(
       (l) => `<option value="${l.code}" ${l.code === getLang() ? 'selected' : ''}>${l.label}</option>`,
     ).join('')
@@ -135,13 +132,17 @@ export function buildSettingsPanel(
         <select class="jf-input" id="jf-lang">${langOptions}</select>
       </div>
       <div>
-        <div class="jf-label" style="margin-bottom:8px">Controls</div>
-        <table class="jf-table">
-          <tbody>
-            ${CONTROLS.map(([k, desc]) => `<tr><td><span class="jf-key">${k}</span></td><td>${desc}</td></tr>`).join('')}
-          </tbody>
-        </table>
-        <div class="jf-muted" style="margin-top:6px">키 변경은 추후 지원 예정</div>
+        <div class="jf-row" style="margin-bottom:8px">
+          <span class="jf-label">${t('settings.controls')}</span>
+          <button class="jf-btn" id="jf-reset-keys" style="font-size:12px;padding:4px 10px">${t('settings.resetKeys')}</button>
+        </div>
+        <table class="jf-table"><tbody>
+          ${BINDABLE.map((b) => `<tr>
+            <td>${t(b.labelKey as StringKey)}</td>
+            <td><button class="jf-btn jf-rebind ${capturing === b.action ? 'jf-on' : ''}" data-act="${b.action}" style="min-width:72px;padding:4px 10px">${capturing === b.action ? t('settings.pressKey') : keyLabel(bindings[b.action])}</button></td>
+          </tr>`).join('')}
+          ${staticRows.map(([keyTxt, descKey]) => `<tr><td>${t(descKey)}</td><td><span class="jf-key">${keyTxt}</span></td></tr>`).join('')}
+        </tbody></table>
       </div>`
     const vol = panel.querySelector('#jf-vol') as HTMLInputElement
     const volVal = panel.querySelector('#jf-vol-val') as HTMLElement
@@ -162,6 +163,24 @@ export function buildSettingsPanel(
       if (onLangChange) onLangChange() // 설정 화면: 제목 포함 전체 재렌더
       else render() // ESC 슬롯: 패널만 자체 재렌더
     })
+    // ── 키 리바인딩: 버튼 클릭 → "키를 누르세요" → 다음 keydown을 캡처 단계(capture=true)에서
+    //    가로채 저장(게임 입력의 버블 리스너로 새지 않게 stopPropagation). Esc는 취소. 자기제거.
+    panel.querySelectorAll<HTMLButtonElement>('[data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (capturing) return
+        capturing = btn.dataset.act as BindableAction
+        render()
+        const onKey = (e: KeyboardEvent): void => {
+          e.preventDefault(); e.stopPropagation()
+          window.removeEventListener('keydown', onKey, true)
+          if (e.code !== 'Escape') setBinding(capturing as BindableAction, e.code)
+          capturing = null
+          render()
+        }
+        window.addEventListener('keydown', onKey, true)
+      })
+    })
+    panel.querySelector('#jf-reset-keys')!.addEventListener('click', () => { resetBindings(); render() })
   }
   render()
   return panel
