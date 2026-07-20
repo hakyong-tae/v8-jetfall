@@ -341,6 +341,29 @@ function countActive(gs: GameState): number {
   return n
 }
 
+// 백그라운드 안정 시뮬 시계 (멀티 전용) — 호스트가 브라우저 탭을 백그라운드로 두면 rAF가
+// Chrome에 스로틀돼 60Hz 권위 시뮬이 멈추고 "매치 전체가 몇 초씩 프리즈"한다. Web Worker의
+// setInterval은 백그라운드에서도 강하게 스로틀되지 않으므로, 워커가 틱 신호만 쏘고 메인스레드가
+// 실경과시간(performance.now())으로 고정스텝 시뮬을 돌린다(모든 게임로직은 메인스레드 그대로).
+// Worker 미가용/생성실패 시 메인스레드 setInterval로 폴백(포그라운드 동일, 백그라운드만 스로틀).
+// ⚠️ 불변식: 시뮬 tick()은 오직 이 시계로만 구동한다(rAF에서 또 돌리면 이중 스텝 → 관측자 디싱크).
+function createSimClock(step: (dtMs: number) => void): { stop: () => void } {
+  let last = performance.now()
+  const onWake = (): void => { const now = performance.now(); step(now - last); last = now }
+  try {
+    if (typeof Worker === 'undefined') throw new Error('no Worker')
+    const src = 'let i=setInterval(function(){postMessage(0)},12);onmessage=function(){clearInterval(i)}'
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
+    const w = new Worker(url)
+    URL.revokeObjectURL(url)
+    w.onmessage = onWake
+    return { stop: () => { try { w.postMessage('stop') } catch { /* noop */ } w.terminate() } }
+  } catch {
+    const id = setInterval(onWake, 16)
+    return { stop: () => clearInterval(id) }
+  }
+}
+
 async function startBotMatch(mode?: 'dm' | 'ctf', mapKey?: string, settings?: RoomSettings, botCount: number = NUM_BOTS): Promise<void> {
   // (봇전 시작 인터스티셜 제거 — 진입 즉시 광고가 이탈을 유발한다는 피드백. 수익은 라운드
   //  종료 인터스티셜 + 리스폰 부스트 리워드로 확보.)
@@ -526,6 +549,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
   let myNum = -1
   let hostSession: HostSession | null = null
   let clientSession: ClientSession | null = null
+  let stopClock = (): void => {} // Worker 시뮬 시계 정지 훅 — 아래 루프에서 실제 stop으로 대입, 매치 종료 경로에서 호출
 
   // ── M5: 무기선택(림보) 메뉴 — 온라인 매치. 호스트는 자기 gs가 곧 권위값이라 로컬 반영만으로
   // 충분(HostSession.spawnPlayers가 맨손 스폰 + LOADOUT 핸들러가 다른 클라 선택을 받는다).
@@ -588,6 +612,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     console.warn(`[net] falling back to offline bots: ${reason}`)
     window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
     stopPing()
+    stopClock() // Worker 시뮬 시계 정지
     esc.dispose() // 이전 매치의 ESC 리스너 제거 (새 봇전이 자기 것을 단다)
     app.ticker.stop(); app.destroy(true); document.body.innerHTML = ''
     startBotMatch().catch(fail)
@@ -663,6 +688,7 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     onLeave: () => {
       window.clearInterval(touchTimer) // M9: 방 목록 하트비트 해제
       stopPing()
+      stopClock() // Worker 시뮬 시계 정지
       skipBtn.dispose()
       disposeLoadoutHotkeys()
       void a.lobby.leave().catch(() => undefined)
@@ -670,13 +696,15 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
     },
   })
 
-  // ── 60Hz 고정스텝 루프 (rAF 누산기, 최대 5틱 캐치업)
+  // ── 60Hz 고정스텝: 시뮬은 Worker 시계가 구동(백그라운드 프리즈 방지), 렌더는 rAF.
+  //    불변식: 권위 시뮬 tick()은 오직 simStep에서만(=Worker 경로). rAF(renderStep)는 렌더 전용 —
+  //    양쪽에서 tick()을 부르면 이중 스텝으로 스냅샷 2배 송출 → 관측자 디싱크.
   let acc = 0
-  app.ticker.add((ticker) => {
-    checkMigrationAndReconnect() // ← M3-E 신규 감시 훅, 루프 나머지는 기존 그대로
-    syncRosterIfHost() // ← M9: roomState 변경 시(dirty) 난입 스폰/이탈 정리
+  function simStep(dtMs: number): void {
+    checkMigrationAndReconnect() // M3-E 마이그레이션 감시 — 백그라운드에서도 계속 돌아야 호스트 이탈 대응
+    syncRosterIfHost() // M9: roomState 변경(난입/이탈) 반영
     if (myNum >= 0) { loadout.poll(); input.setMenuOpen(loadout.isOpen()) } // M5: 자동오픈+발사억제
-    acc += ticker.deltaMS
+    acc += dtMs
     let ticks = 0
     while (acc >= TICK_MS && ticks < MAX_CATCHUP_TICKS) {
       input.applyTo(scratch, camera.x, camera.y, app.screen.width, app.screen.height)
@@ -692,9 +720,11 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
       acc -= TICK_MS
       ticks++
     }
-    if (ticks === MAX_CATCHUP_TICKS) acc = 0 // 스파이럴 방지
-
-    // ── 렌더 동기화 — GostekPool 무수정 재사용, .active 스프라이트 전부 렌더
+    if (ticks === MAX_CATCHUP_TICKS) acc = 0 // 스파이럴 방지(장시간 정지 후 복귀 시 밀린 시간 폐기)
+  }
+  function renderStep(): void {
+    // ── 렌더 동기화 — GostekPool 무수정 재사용, .active 스프라이트 전부 렌더. (백그라운드면 rAF가
+    //    멈춰 이 함수는 안 돌지만 simStep은 Worker로 계속 → 매치는 안 멈춘다.)
     gostek.update(gs, myNum)
     entities.update(gs)
     if (myNum >= 0) {
@@ -715,7 +745,9 @@ async function startNetMatch(a: StartMatchArg): Promise<void> {
       world.position.set(app.screen.width / 2 - camera.x, app.screen.height / 2 - camera.y)
       bgLayer.position.set(app.screen.width / 2, app.screen.height / 2 - camera.y)
     }
-  })
+  }
+  stopClock = createSimClock(simStep).stop
+  app.ticker.add(renderStep)
 }
 
 function fail(err: unknown): void {
